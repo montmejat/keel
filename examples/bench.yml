@@ -1,0 +1,11 @@
+# Build with `cargo build --release` first.
+nodes:
+  - id: source
+    path: ../target/release/bench-source
+    inputs:
+      reply: sink/reply
+
+  - id: sink
+    path: ../target/release/bench-sink
+    inputs:
+      data: source/data

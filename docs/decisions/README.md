@@ -1,0 +1,17 @@
+# Decision records
+
+One file per decision: the context, what was decided, and what it costs.
+**Accepted** means agreed; **Proposed** means it's waiting for a review.
+Superseded records stay, with a link to what replaced them.
+
+| # | Decision | Status |
+|---|---|---|
+| [0001](0001-learning-project-whole-stack.md) | A learning project covering the whole stack, minimally | Accepted |
+| [0002](0002-rust-only.md) | Rust only | Accepted |
+| [0003](0003-raw-byte-payloads.md) | Payloads are raw bytes for now | Accepted |
+| [0004](0004-data-and-control-planes.md) | Separate data and control planes | Proposed |
+| [0005](0005-shared-memory-transport.md) | Zero-copy local transport over shared memory | Proposed |
+| [0006](0006-coordinator-and-daemons.md) | One coordinator, one daemon per machine | Proposed |
+| [0007](0007-tools-are-control-plane-clients.md) | CLI and TUI are clients of the control API | Proposed |
+| [0008](0008-hand-rolled-wire-format.md) | Keep the hand-rolled wire format, for now | Proposed |
+| [0009](0009-measure-before-optimizing.md) | Benchmark before each performance change | Accepted |

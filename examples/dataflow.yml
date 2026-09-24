@@ -1,0 +1,10 @@
+nodes:
+  - id: talker
+    path: ../target/debug/talker
+    inputs:
+      ack: listener/ack
+
+  - id: listener
+    path: ../target/debug/listener
+    inputs:
+      count: talker/count
