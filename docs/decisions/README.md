@@ -15,3 +15,4 @@ Superseded records stay, with a link to what replaced them.
 | [0007](0007-tools-are-control-plane-clients.md) | CLI and TUI are clients of the control API | Proposed |
 | [0008](0008-hand-rolled-wire-format.md) | Keep the hand-rolled wire format, for now | Proposed |
 | [0009](0009-measure-before-optimizing.md) | Benchmark before each performance change | Accepted |
+| [0010](0010-dependencies.md) | Build the core by hand, use crates at the edges | Proposed |

@@ -8,14 +8,23 @@ use std::io::{self, Read, Write};
 /// Set by the daemon on every node it spawns.
 pub const ENV_NODE_ID: &str = "KEEL_NODE_ID";
 pub const ENV_DAEMON_SOCKET: &str = "KEEL_DAEMON_SOCKET";
+/// Directory holding the shared-memory regions, see [`crate::shm`].
+pub const ENV_SHM_DIR: &str = "KEEL_SHM_DIR";
 
 const MAX_FRAME_LEN: u32 = 64 * 1024 * 1024;
 
 /// Node -> daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeMsg {
-    Register { node_id: String },
-    Output { output_id: String, data: Vec<u8> },
+    Register {
+        node_id: String,
+    },
+    /// The payload is in region `<this node>.<slot>`.
+    Output {
+        output_id: String,
+        slot: u32,
+        len: u64,
+    },
 }
 
 /// Daemon -> node.
@@ -23,7 +32,9 @@ pub enum NodeMsg {
 pub enum DaemonMsg {
     /// All nodes have registered, so no output can be lost.
     Ready,
-    Input { input_id: String, data: Vec<u8> },
+    /// The payload is in region `<source>.<slot>`, and the receiver holds a
+    /// reference to it.
+    Input { input_id: String, source: String, slot: u32, len: u64 },
     /// All upstream nodes have exited.
     Stop,
 }
@@ -32,16 +43,20 @@ impl NodeMsg {
     pub fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         match self {
             NodeMsg::Register { node_id } => write_frame(w, 1, &[node_id.as_bytes()]),
-            NodeMsg::Output { output_id, data } => write_frame(w, 2, &[output_id.as_bytes(), data]),
+            NodeMsg::Output { output_id, slot, len } => {
+                write_frame(w, 2, &[output_id.as_bytes(), &slot.to_le_bytes(), &len.to_le_bytes()])
+            }
         }
     }
 
     /// `Ok(None)` on a clean end of stream.
     pub fn read_from(r: &mut impl Read) -> io::Result<Option<Self>> {
-        let Some((tag, mut f)) = read_frame(r)? else { return Ok(None) };
+        let Some((tag, mut f)) = read_frame(r)? else {
+            return Ok(None);
+        };
         let msg = match tag {
             1 => NodeMsg::Register { node_id: f.string()? },
-            2 => NodeMsg::Output { output_id: f.string()?, data: f.bytes()? },
+            2 => NodeMsg::Output { output_id: f.string()?, slot: f.u32()?, len: f.u64()? },
             t => return Err(invalid(format!("unknown node message tag {t}"))),
         };
         Ok(Some(msg))
@@ -52,17 +67,21 @@ impl DaemonMsg {
     pub fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         match self {
             DaemonMsg::Ready => write_frame(w, 101, &[]),
-            DaemonMsg::Input { input_id, data } => write_frame(w, 102, &[input_id.as_bytes(), data]),
+            DaemonMsg::Input { input_id, source, slot, len } => {
+                write_frame(w, 102, &[input_id.as_bytes(), source.as_bytes(), &slot.to_le_bytes(), &len.to_le_bytes()])
+            }
             DaemonMsg::Stop => write_frame(w, 103, &[]),
         }
     }
 
     /// `Ok(None)` on a clean end of stream.
     pub fn read_from(r: &mut impl Read) -> io::Result<Option<Self>> {
-        let Some((tag, mut f)) = read_frame(r)? else { return Ok(None) };
+        let Some((tag, mut f)) = read_frame(r)? else {
+            return Ok(None);
+        };
         let msg = match tag {
             101 => DaemonMsg::Ready,
-            102 => DaemonMsg::Input { input_id: f.string()?, data: f.bytes()? },
+            102 => DaemonMsg::Input { input_id: f.string()?, source: f.string()?, slot: f.u32()?, len: f.u64()? },
             103 => DaemonMsg::Stop,
             t => return Err(invalid(format!("unknown daemon message tag {t}"))),
         };
@@ -115,6 +134,16 @@ impl Fields {
         Ok(field)
     }
 
+    fn u32(&mut self) -> io::Result<u32> {
+        let b = self.bytes()?;
+        Ok(u32::from_le_bytes(b.try_into().map_err(|_| invalid("expected a u32"))?))
+    }
+
+    fn u64(&mut self) -> io::Result<u64> {
+        let b = self.bytes()?;
+        Ok(u64::from_le_bytes(b.try_into().map_err(|_| invalid("expected a u64"))?))
+    }
+
     fn string(&mut self) -> io::Result<String> {
         String::from_utf8(self.bytes()?).map_err(|_| invalid("string is not valid UTF-8"))
     }
@@ -132,11 +161,11 @@ mod tests {
     fn round_trip() {
         let node = [
             NodeMsg::Register { node_id: "talker".into() },
-            NodeMsg::Output { output_id: "count".into(), data: vec![1, 2, 3] },
+            NodeMsg::Output { output_id: "count".into(), slot: 3, len: 1 << 40 },
         ];
         let daemon = [
             DaemonMsg::Ready,
-            DaemonMsg::Input { input_id: "count".into(), data: vec![] },
+            DaemonMsg::Input { input_id: "count".into(), source: "talker".into(), slot: 0, len: 0 },
             DaemonMsg::Stop,
         ];
         let mut wire = Vec::new();

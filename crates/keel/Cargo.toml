@@ -4,3 +4,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "keel node API"
+
+[dependencies]
+libc = "0.2"

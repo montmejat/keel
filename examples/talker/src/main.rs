@@ -8,7 +8,9 @@ fn main() -> std::io::Result<()> {
         println!("[{}] sending count {i}", node.id());
         node.send_output("count", i.to_string().as_bytes())?;
         match node.next_event()? {
-            Event::Input { id, data } => println!("[{}] {id}: {}", node.id(), String::from_utf8_lossy(&data)),
+            Event::Input { id, data } => {
+                println!("[{}] {id}: {}", node.id(), String::from_utf8_lossy(&data))
+            }
             Event::Stop => return Ok(()),
         }
     }

@@ -1,5 +1,8 @@
 //! Measures round-trip latency and one-way throughput to `bench-sink`, for a
 //! range of message sizes.
+//!
+//! Payloads are written in place and only their first byte is set, so this
+//! measures the middleware, not the cost of filling buffers.
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -16,13 +19,10 @@ fn main() -> io::Result<()> {
     let mut node = Node::from_env()?;
     println!("{:>8} {:>10} {:>10} {:>12} {:>10}", "size", "rtt p50", "rtt p99", "throughput", "msg/s");
     for size in SIZES {
-        let mut msg = vec![0u8; size];
-
-        msg[0] = PING;
         let mut rtts: Vec<Duration> = (0..PINGS)
             .map(|_| {
                 let start = Instant::now();
-                node.send_output("data", &msg)?;
+                node.send_with("data", size, |buf| buf[0] = PING)?;
                 wait_reply(&mut node)?;
                 Ok(start.elapsed())
             })
@@ -30,13 +30,10 @@ fn main() -> io::Result<()> {
         rtts.sort();
 
         let count = (BULK_BYTES / size).clamp(10, 100_000);
-        msg[0] = BULK;
         let start = Instant::now();
         for i in 0..count {
-            if i == count - 1 {
-                msg[0] = BULK_LAST;
-            }
-            node.send_output("data", &msg)?;
+            let kind = if i == count - 1 { BULK_LAST } else { BULK };
+            node.send_with("data", size, |buf| buf[0] = kind)?;
         }
         wait_reply(&mut node)?;
         let secs = start.elapsed().as_secs_f64();

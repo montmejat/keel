@@ -9,7 +9,7 @@ change helped.
 ## Decision
 `examples/bench` measures round-trip latency (p50/p99) and one-way throughput
 across message sizes from 64 B to 8 MiB. Results are recorded in
-[architecture.md](../architecture.md) at each milestone that touches the
+[architecture.md](../architecture.md#benchmarks) at each milestone that touches the
 transport.
 
 ## Consequences

@@ -3,19 +3,25 @@
 //! Spawns every node, waits for all of them to register, then routes each
 //! output to the inputs subscribed to it. A node gets `Stop` once all of its
 //! upstream nodes have exited. The daemon exits when all nodes have.
+//!
+//! Payloads never pass through the daemon: nodes exchange shared-memory
+//! regions, and the daemon forwards descriptors and keeps the regions'
+//! reference counts right (see `keel::shm`).
 
 pub mod dataflow;
 
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dataflow::{Dataflow, Graph, Routes};
-use keel::protocol::{DaemonMsg, NodeMsg, ENV_DAEMON_SOCKET, ENV_NODE_ID};
+use keel::protocol::{DaemonMsg, NodeMsg, ENV_DAEMON_SOCKET, ENV_NODE_ID, ENV_SHM_DIR};
+use keel::shm::{self, Region};
 
 struct State {
     expected: HashSet<String>,
@@ -31,8 +37,9 @@ pub fn run(path: &Path) -> io::Result<bool> {
     let Graph { routes, upstream } = dataflow.resolve()?;
     let base_dir = path.parent().unwrap_or(Path::new("."));
 
-    let socket_path = std::env::temp_dir().join(format!("keel-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&socket_path);
+    let files = RuntimeFiles::create()?;
+    let socket_path = files.socket.clone();
+    let shm_dir = Arc::new(files.shm_dir.clone());
     let listener = UnixListener::bind(&socket_path)?;
 
     let state = Arc::new(Mutex::new(State {
@@ -45,8 +52,8 @@ pub fn run(path: &Path) -> io::Result<bool> {
         let state = state.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let (state, routes) = (state.clone(), routes.clone());
-                std::thread::spawn(move || handle_node(stream, &state, &routes));
+                let (state, routes, shm_dir) = (state.clone(), routes.clone(), shm_dir.clone());
+                std::thread::spawn(move || handle_node(stream, &state, &routes, &shm_dir));
             }
         });
     }
@@ -57,24 +64,68 @@ pub fn run(path: &Path) -> io::Result<bool> {
         let child = Command::new(&exe)
             .env(ENV_NODE_ID, &node.id)
             .env(ENV_DAEMON_SOCKET, &socket_path)
+            .env(ENV_SHM_DIR, &files.shm_dir)
             .spawn()
             .map_err(|e| io::Error::other(format!("failed to spawn `{}` ({}): {e}", node.id, exe.display())));
         match child {
             Ok(child) => children.push((node.id.clone(), child)),
             Err(e) => {
                 kill_all(&mut children);
-                let _ = std::fs::remove_file(&socket_path);
                 return Err(e);
             }
         }
     }
 
-    let ok = supervise(children);
-    let _ = std::fs::remove_file(&socket_path);
-    Ok(ok)
+    Ok(supervise(children))
 }
 
-fn handle_node(mut stream: UnixStream, state: &Mutex<State>, routes: &Routes) {
+/// The daemon's socket and shared-memory directory, removed on drop.
+struct RuntimeFiles {
+    socket: PathBuf,
+    shm_dir: PathBuf,
+}
+
+impl RuntimeFiles {
+    fn create() -> io::Result<Self> {
+        let name = format!("keel-{}", std::process::id());
+        // tmpfs, so regions live in RAM; fall back to the temp dir elsewhere.
+        let shm_base = Path::new("/dev/shm");
+        let shm_base = if shm_base.is_dir() { shm_base.to_owned() } else { std::env::temp_dir() };
+        remove_stale(&shm_base, "");
+        remove_stale(&std::env::temp_dir(), ".sock");
+        let files = Self { socket: std::env::temp_dir().join(format!("{name}.sock")), shm_dir: shm_base.join(name) };
+        let _ = std::fs::remove_file(&files.socket);
+        let _ = std::fs::remove_dir_all(&files.shm_dir);
+        std::fs::create_dir(&files.shm_dir)?;
+        Ok(files)
+    }
+}
+
+impl Drop for RuntimeFiles {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.socket);
+        let _ = std::fs::remove_dir_all(&self.shm_dir);
+    }
+}
+
+/// Removes `keel-<pid><suffix>` entries in `dir` left behind by daemons that
+/// were killed before they could clean up.
+fn remove_stale(dir: &Path, suffix: &str) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|n| n.strip_prefix("keel-")?.strip_suffix(suffix)?.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if !Path::new(&format!("/proc/{pid}")).exists() {
+            let path = entry.path();
+            let _ = if path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+        }
+    }
+}
+
+fn handle_node(mut stream: UnixStream, state: &Mutex<State>, routes: &Routes, shm_dir: &Path) {
     let node_id = match NodeMsg::read_from(&mut stream) {
         Ok(Some(NodeMsg::Register { node_id })) => node_id,
         other => {
@@ -88,7 +139,9 @@ fn handle_node(mut stream: UnixStream, state: &Mutex<State>, routes: &Routes) {
             eprintln!("[daemon] rejecting unknown or duplicate node `{node_id}`");
             return;
         }
-        let Ok(writer) = stream.try_clone() else { return };
+        let Ok(writer) = stream.try_clone() else {
+            return;
+        };
         s.writers.insert(node_id.clone(), Arc::new(Mutex::new(writer)));
         if s.writers.len() == s.expected.len() {
             eprintln!("[daemon] all {} nodes registered", s.expected.len());
@@ -98,18 +151,37 @@ fn handle_node(mut stream: UnixStream, state: &Mutex<State>, routes: &Routes) {
         }
     }
 
+    // This node's regions, mapped only to adjust their reference counts.
+    let mut regions: HashMap<u32, Region> = HashMap::new();
     loop {
         match NodeMsg::read_from(&mut stream) {
-            Ok(Some(NodeMsg::Output { output_id, data })) => {
-                let Some(targets) = routes.get(&(node_id.clone(), output_id)) else { continue };
+            Ok(Some(NodeMsg::Output { output_id, slot, len })) => {
+                let region = match regions.entry(slot) {
+                    std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        match Region::open(&shm::region_path(shm_dir, &node_id, slot)) {
+                            Ok(region) => e.insert(region),
+                            Err(err) => {
+                                eprintln!("[daemon] `{node_id}` sent from region {slot}, which can't be opened: {err}");
+                                break;
+                            }
+                        }
+                    }
+                };
+                let targets = routes.get(&(node_id.clone(), output_id)).map_or(&[][..], |t| t);
                 for (target, input_id) in targets {
                     let writer = state.lock().unwrap().writers.get(target).cloned();
-                    if let Some(w) = writer {
-                        let msg = DaemonMsg::Input { input_id: input_id.clone(), data: data.clone() };
-                        // The target may have exited already; that is not our problem.
-                        let _ = msg.write_to(&mut *w.lock().unwrap());
+                    let Some(w) = writer else { continue };
+                    // Take the receiver's reference before it can see the message.
+                    region.refcount().fetch_add(1, Ordering::Relaxed);
+                    let msg = DaemonMsg::Input { input_id: input_id.clone(), source: node_id.clone(), slot, len };
+                    if msg.write_to(&mut *w.lock().unwrap()).is_err() {
+                        // The target has exited; it will never release it.
+                        region.refcount().fetch_sub(1, Ordering::Release);
                     }
                 }
+                // Drop the in-transit reference the sender took.
+                region.refcount().fetch_sub(1, Ordering::Release);
             }
             Ok(None) => break,
             Ok(Some(other)) => {

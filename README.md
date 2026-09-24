@@ -5,8 +5,9 @@ stack fits together: transport, runtime, lifecycle, coordination, packaging,
 deployment, provisioning and tooling. See [docs/architecture.md](docs/architecture.md)
 and the [decision records](docs/decisions/).
 
-Today: a daemon spawns the nodes of a dataflow and routes messages between
-them over a Unix socket.
+Today: a daemon spawns the nodes of a dataflow on one machine. Nodes exchange
+payloads through shared memory, zero-copy; the daemon only forwards small
+descriptors over a Unix socket. Linux only.
 
 ```
 crates/keel          node API

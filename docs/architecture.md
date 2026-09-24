@@ -34,8 +34,8 @@ and deployment all talk to the control plane only.
 
 1. **Cleanup** (done): Rust only; daemon split into library + binary;
    benchmark baseline.
-2. **Zero-copy local transport**: nodes exchange shared-memory buffers, the
-   daemon only handles control messages. Measured against the baseline.
+2. **Zero-copy local transport** (done): nodes exchange shared-memory
+   buffers, the daemon only forwards descriptors.
 3. **Control API + first TUI**: daemon exposes its state; `keel top` shows
    nodes, lifecycle state, message rates.
 4. **Multi-machine**: coordinator, several daemons, TCP between machines,
@@ -44,10 +44,13 @@ and deployment all talk to the control plane only.
 6. **Provisioning**: SSH bootstrap of a fresh machine.
 7. **Lifecycle polish**: restart policies, health checks, rolling updates.
 
-## Baseline (milestone 1)
+## Benchmarks
 
 `cargo build --release && ./target/release/keel-daemon examples/bench.yml`.
-Every message is copied into the daemon and out again over one Unix socket.
+Round-trip latency with one message in flight, then one-way throughput.
+
+**Milestone 1**: every payload copied into the daemon and back out over a
+Unix socket.
 
 ```
     size    rtt p50    rtt p99   throughput      msg/s
@@ -58,5 +61,20 @@ Every message is copied into the daemon and out again over one Unix socket.
     8MiB     28.6ms     31.4ms       435 MB/s         52
 ```
 
-Large messages are where zero-copy should matter: an 8 MiB message (roughly a
-raw 4K camera frame) takes ~29 ms round trip today, too slow for 30 Hz.
+**Milestone 2**: shared memory, only descriptors go through the daemon
+([0005](decisions/0005-shared-memory-transport.md)).
+
+```
+    size    rtt p50    rtt p99   throughput      msg/s
+     64B     24.9µs     58.1µs        18 MB/s     284499
+    4KiB     23.1µs     53.1µs      1378 MB/s     336495
+   64KiB     16.5µs     63.3µs     22987 MB/s     350749
+    1MiB     21.6µs     70.1µs    184972 MB/s     176403
+    8MiB     21.7µs     67.6µs    953293 MB/s     113641
+```
+
+Latency is now flat at ~20 µs whatever the size: an 8 MiB frame went from
+29 ms to 22 µs round trip. The MB/s column is size × msg/s. Nothing reads or
+writes the payload, so it isn't memory bandwidth; `msg/s` is the meaningful
+number. A real producer writing an 8 MiB frame pays for that write once, in
+place, and nothing else does.

@@ -49,6 +49,13 @@ impl Dataflow {
         if ids.len() != self.nodes.len() {
             return Err(io::Error::other("node ids must be unique"));
         }
+        // Ids name shared-memory files, so keep them to a safe character set.
+        if let Some(bad) = ids
+            .iter()
+            .find(|id| id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        {
+            return Err(io::Error::other(format!("node id `{bad}` may only contain letters, digits, `_` and `-`")));
+        }
         let mut routes = Routes::new();
         let mut upstream = HashMap::new();
         for node in &self.nodes {
@@ -102,7 +109,8 @@ mod tests {
         let unknown_node = "nodes: [{ id: a, path: a, inputs: { x: nope/out } }]";
         let no_output = "nodes: [{ id: a, path: a, inputs: { x: a } }]";
         let unknown_field = "nodes: [{ id: a, path: a, typo: 1 }]";
-        for yaml in [duplicate, unknown_node, no_output, unknown_field] {
+        let bad_id = "nodes: [{ id: ../a, path: a }]";
+        for yaml in [duplicate, unknown_node, no_output, unknown_field, bad_id] {
             assert!(resolve(yaml).is_err(), "accepted: {yaml}");
         }
     }
