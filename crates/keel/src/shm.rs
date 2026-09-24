@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 const HEADER_LEN: usize = 64;
 const MIN_CAPACITY: usize = 4096 - HEADER_LEN;
 /// Regions per node. Bounds how many messages a node can have in flight.
-const MAX_SLOTS: usize = 32;
+pub const MAX_SLOTS: usize = 32;
 /// How long `Pool::acquire` waits for receivers to release a region.
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 

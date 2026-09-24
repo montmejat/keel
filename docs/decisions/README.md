@@ -16,3 +16,5 @@ Superseded records stay, with a link to what replaced them.
 | [0008](0008-hand-rolled-wire-format.md) | Keep the hand-rolled wire format, for now | Proposed |
 | [0009](0009-measure-before-optimizing.md) | Benchmark before each performance change | Accepted |
 | [0010](0010-dependencies.md) | Build the core by hand, use crates at the edges | Proposed |
+| [0011](0011-control-api.md) | Control API: JSON lines over a Unix socket | Proposed |
+| [0012](0012-daemon-as-init.md) | The daemon is a small init for its nodes | Proposed |

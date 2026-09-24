@@ -1,0 +1,61 @@
+//! Human-readable numbers.
+
+use std::time::Duration;
+
+/// `42s`, `3m07s`, `2h05m`
+pub fn duration(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m{:02}s", s / 60, s % 60),
+        _ => format!("{}h{:02}m", s / 3600, s / 60 % 60),
+    }
+}
+
+/// Time since the daemon started: `+12.345s`
+pub fn timestamp(t_ms: u64) -> String {
+    format!("+{}.{:03}s", t_ms / 1000, t_ms % 1000)
+}
+
+/// `512 B`, `4.0 KiB`, `8.0 MiB`
+pub fn bytes(n: f64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut n = n;
+    let mut unit = 0;
+    while n >= 1024.0 && unit < UNITS.len() - 1 {
+        n /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n:.0} {}", UNITS[0])
+    } else {
+        format!("{n:.1} {}", UNITS[unit])
+    }
+}
+
+/// `0`, `29.9`, `1.2k`, `340k`
+pub fn rate(n: f64) -> String {
+    match n {
+        n if n < 0.05 => "0".into(),
+        n if n < 100.0 => format!("{n:.1}"),
+        n if n < 1000.0 => format!("{n:.0}"),
+        n if n < 100_000.0 => format!("{:.1}k", n / 1000.0),
+        n => format!("{:.0}k", n / 1000.0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats() {
+        assert_eq!(duration(Duration::from_secs(187)), "3m07s");
+        assert_eq!(duration(Duration::from_secs(7500)), "2h05m");
+        assert_eq!(timestamp(12_045), "+12.045s");
+        assert_eq!(bytes(512.0), "512 B");
+        assert_eq!(bytes(6_220_800.0), "5.9 MiB");
+        assert_eq!(rate(29.94), "29.9");
+        assert_eq!(rate(342_654.0), "343k");
+    }
+}

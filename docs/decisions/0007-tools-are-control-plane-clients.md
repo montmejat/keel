@@ -19,4 +19,6 @@ keel should come with good terminal tools: a live view of a running dataflow
 - Anything the TUI shows has to be exposed by the API, which keeps the API honest.
 - Nodes must report metrics to their daemon (see 0004).
 - Logs must be captured by the daemon (piping node stdout/stderr) rather than
-  inherited, as they are today.
+  inherited. Done in milestone 3, see [0012](0012-daemon-as-init.md).
+- Milestone 3 shipped `keel run | ps | logs [-f] [node] | stop | top`; the
+  API is described in [0011](0011-control-api.md).

@@ -1,0 +1,14 @@
+# Runs until stopped: Ctrl-C, `keel stop`, or `s` in `keel top`.
+nodes:
+  - id: camera
+    path: ../target/debug/camera
+
+  - id: detector
+    path: ../target/debug/detector
+    inputs:
+      frames: camera/frames
+
+  - id: recorder
+    path: ../target/debug/recorder
+    inputs:
+      brightness: detector/brightness

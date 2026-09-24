@@ -3,9 +3,11 @@ name = "keel-daemon"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Spawns a keel dataflow's nodes and routes messages between them"
+description = "Runs a keel dataflow's nodes, routes messages between them, and serves the control API"
 
 [dependencies]
 keel = { path = "../keel" }
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 serde_yaml = "0.9"

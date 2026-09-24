@@ -1,0 +1,15 @@
+[package]
+name = "keel-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The keel command: run dataflows and inspect them"
+
+[[bin]]
+name = "keel"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+keel-daemon = { path = "../keel-daemon" }
+ratatui = "0.30"

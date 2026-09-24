@@ -15,7 +15,8 @@ hot path, and every byte is copied twice.
 
 ## Consequences
 - The daemon's throughput stops mattering; its correctness does.
-- Metrics like message rates have to be reported by nodes, since the daemon
-  no longer sees the messages.
+- The daemon no longer sees payloads, but it still forwards every
+  descriptor, so it counts messages and bytes per output itself. If
+  descriptors ever go directly node to node, nodes will have to report metrics.
 - Every higher layer (coordinator, deployment, TUI) talks to the control plane
   only.

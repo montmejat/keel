@@ -30,14 +30,35 @@ Decisions and their reasoning live in [`decisions/`](decisions/).
 Keeping these separate is the main structural rule: the TUI, the coordinator
 and deployment all talk to the control plane only.
 
+## Linux building blocks
+
+keel leans on the kernel and on Linux conventions instead of reinventing them:
+
+| Need | Linux mechanism |
+|---|---|
+| Isolation between nodes | Processes |
+| Zero-copy payloads | Files in `/dev/shm` (tmpfs) + `mmap(MAP_SHARED)` |
+| Buffer ownership | Atomic reference counts in the shared pages |
+| Control and discovery | Unix sockets in `$XDG_RUNTIME_DIR`, found by listing a directory |
+| Liveness of a daemon | `/proc/<pid>` |
+| Ctrl-C goes to the supervisor only | Process groups |
+| Nodes die with the daemon | `prctl(PR_SET_PDEATHSIG)` |
+| Stop, then insist | `Stop` message → SIGTERM → SIGKILL |
+| Logs | stdout/stderr pipes, prefixed lines |
+
+The closest relative on Linux is PipeWire (memfd/shared-memory buffers
+between processes, a daemon brokering the graph). The supervision side
+overlaps with systemd.
+
 ## Milestones
 
 1. **Cleanup** (done): Rust only; daemon split into library + binary;
    benchmark baseline.
 2. **Zero-copy local transport** (done): nodes exchange shared-memory
    buffers, the daemon only forwards descriptors.
-3. **Control API + first TUI**: daemon exposes its state; `keel top` shows
-   nodes, lifecycle state, message rates.
+3. **Control API + first TUI** (done): the daemon serves its state over a
+   control socket; `keel ps | logs | stop | top` are clients of it. The
+   daemon also became a proper supervisor: log capture, ordered stop.
 4. **Multi-machine**: coordinator, several daemons, TCP between machines,
    tested with containers.
 5. **Packaging and deployment**: bundles, hashing, push and cache.
@@ -46,7 +67,7 @@ and deployment all talk to the control plane only.
 
 ## Benchmarks
 
-`cargo build --release && ./target/release/keel-daemon examples/bench.yml`.
+`cargo build --release && ./target/release/keel run examples/bench.yml`.
 Round-trip latency with one message in flight, then one-way throughput.
 
 **Milestone 1**: every payload copied into the daemon and back out over a
@@ -73,7 +94,11 @@ Unix socket.
     8MiB     21.7µs     67.6µs    953293 MB/s     113641
 ```
 
-Latency is now flat at ~20 µs whatever the size: an 8 MiB frame went from
+**Milestone 3**: the daemon now counts messages per output and captures
+node output through pipes. Latency is unchanged; small-message throughput is
+10–20% lower (e.g. 64 B: 257k msg/s, 8 MiB: 100k msg/s).
+
+With shared memory, latency is flat at ~20 µs whatever the size: an 8 MiB frame went from
 29 ms to 22 µs round trip. The MB/s column is size × msg/s. Nothing reads or
 writes the payload, so it isn't memory bandwidth; `msg/s` is the meaningful
 number. A real producer writing an 8 MiB frame pays for that write once, in

@@ -26,7 +26,8 @@ Rule of thumb: if the crate would *be* the layer, write it. If it's a tool
 the layer uses, take the crate.
 
 ## Consequences
-- Today's dependencies: `libc` (node crate); `serde` and `serde_yaml` (daemon).
+- Today's dependencies: `libc` (node crate); `libc`, `serde`, `serde_json`
+  and `serde_yaml` (daemon); `clap` and `ratatui` (CLI).
 - `serde_yaml` is deprecated upstream. Replace it (e.g. `serde_yml`, or TOML)
   before it causes trouble.
 - Each new dependency is noted here, in this file's Consequences.
