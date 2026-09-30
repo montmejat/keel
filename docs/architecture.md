@@ -12,12 +12,15 @@ Decisions and their reasoning live in [`decisions/`](decisions/).
 | Layer | Question it answers | Minimal version |
 |---|---|---|
 | Transport | How do bytes move? | Shared memory on one machine (zero-copy), TCP between machines |
+| Real time | Can a control loop meet its deadlines? | SCHED_FIFO, pinned CPUs, no daemon on the data path |
 | Runtime | Who runs the nodes on a machine? | A per-machine daemon |
 | Lifecycle | Start, stop, crash, restart | Ordered startup and shutdown, restart policies |
 | Coordination | Which node runs where? | A coordinator that assigns nodes to daemons |
-| Packaging | What exactly gets shipped? | Static binary + config in a content-addressed bundle |
-| Deployment | How does a bundle reach a machine? | `keel deploy` pushes bundles; daemons cache them by hash |
+| Packaging | What exactly gets shipped? | Reproducible static binaries, identified by their hash |
+| Deployment | How does software reach a machine? | `keel deploy` pushes missing hashes to a store on each daemon; rollback and cleanup |
 | Provisioning | How does a bare machine become a keel machine? | `keel provision <host>` over SSH installs and starts the daemon |
+| Observability | Where does the time go? | Timestamps at every hop, traces from a source to everything it caused, clocks aligned by keel |
+| Recording | What happened, and can it happen again? | A recorder node, replay in place of the sources, export to datasets |
 | Tooling | What's going on right now? | A `keel` CLI and TUI, clients of the daemons' control API |
 
 ## Processes
@@ -82,9 +85,24 @@ overlaps with systemd.
 4. **Multi-machine** (done): `keel daemon` per machine, `keel run` as the
    coordinator, TCP between daemons, tested with two local daemons and with
    Podman containers.
-5. **Packaging and deployment**: bundles, hashing, push and cache.
-6. **Provisioning**: SSH bootstrap of a fresh machine.
-7. **Lifecycle polish**: restart policies, health checks, rolling updates.
+5. **Tracing and latency**: timestamps at every hop, traces that follow a
+   message through every node it causes, clock offsets measured by keel
+   itself, `keel trace`, a Perfetto export, and a jitter benchmark
+   ([0014](decisions/0014-tracing-and-clocks.md)). This comes first because it is
+   what the next milestones get measured with.
+6. **Real-time data plane**: the daemon off the data path (descriptor rings
+   in shared memory, futex wake-ups), no allocation per message, SCHED_FIFO
+   and CPU pinning from the dataflow, per-input policies (block, or keep the
+   latest), a periodic-loop helper. Tried on a PREEMPT_RT kernel on the Pi.
+7. **Packaging and deployment**: reproducible static builds, a store keyed
+   by hash on each daemon, `keel deploy | rollback | history | gc`. Replaces
+   copying binaries to the same path on every machine.
+8. **Recording and replay**: a recorder node, a file format that names the
+   deployment that produced it, `keel replay`, `keel export` to datasets.
+9. **Cluster TUI**: `keel top` through the coordinator: the whole graph
+   across machines, latency per link, traces, deployed version, recordings.
+10. **Provisioning**: SSH bootstrap of a fresh machine.
+11. **Lifecycle polish**: restart policies, health checks, rolling updates.
 
 ## Benchmarks
 
