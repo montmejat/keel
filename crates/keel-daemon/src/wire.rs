@@ -5,13 +5,14 @@
 //! [`COORDINATOR`], then JSON lines both ways, or [`PEER`], then a stream of
 //! `keel::protocol::PeerMsg` frames carrying data between machines.
 
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::control::LogLine;
+use crate::control::{Clock, LogLine, Reply, Request};
 use crate::dataflow::Dataflow;
 
 pub const COORDINATOR: u8 = b'C';
@@ -32,6 +33,12 @@ pub enum ToDaemon {
     Stop,
     /// Kill everything now.
     Abort,
+    /// Clock sync: `t1` is the coordinator's clock when sending.
+    Ping { t1: u64 },
+    /// Every machine's clock relative to the coordinator's, as measured.
+    Clocks { clocks: BTreeMap<String, Clock> },
+    /// A control API request, answered with [`Event::Control`].
+    Control { id: u64, request: Request },
 }
 
 /// Daemon -> coordinator. Also what a session reports to `keel run` when
@@ -57,6 +64,17 @@ pub enum Event {
     /// This daemon can't run its share of the dataflow.
     Error {
         message: String,
+    },
+    /// Answers `Ping`: `t2` and `t3` are the daemon's clock when it received
+    /// the ping and when it answered.
+    Pong {
+        t1: u64,
+        t2: u64,
+        t3: u64,
+    },
+    Control {
+        id: u64,
+        reply: Reply,
     },
 }
 

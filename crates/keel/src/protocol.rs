@@ -6,6 +6,8 @@
 
 use std::io::{self, Read, Write};
 
+use crate::trace::Context;
+
 /// Set by the daemon on every node it spawns.
 pub const ENV_NODE_ID: &str = "KEEL_NODE_ID";
 pub const ENV_DAEMON_SOCKET: &str = "KEEL_DAEMON_SOCKET";
@@ -95,8 +97,9 @@ impl DaemonMsg {
 /// node sends arrives in order, `Closed` last.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerMsg {
-    /// `source/output` sent a message; its payload travels with it.
-    Data { source: String, output: String, payload: Vec<u8> },
+    /// `source/output` sent a message; its trace context and payload travel
+    /// with it. `published_ns` is on the sending machine's clock.
+    Data { source: String, output: String, context: Context, payload: Vec<u8> },
     /// `node` has exited: nothing more will come from it.
     Closed { node: String },
 }
@@ -104,21 +107,51 @@ pub enum PeerMsg {
 impl PeerMsg {
     pub fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         match self {
-            PeerMsg::Data { source, output, payload } => Self::write_data(w, source, output, payload),
+            PeerMsg::Data { source, output, context, payload } => Self::write_data(w, source, output, context, payload),
             PeerMsg::Closed { node } => write_frame(w, 202, &[node.as_bytes()]),
         }
     }
 
     /// Writes a `Data` message straight from a borrowed payload.
-    pub fn write_data(w: &mut impl Write, source: &str, output: &str, payload: &[u8]) -> io::Result<()> {
-        write_frame(w, 201, &[source.as_bytes(), output.as_bytes(), payload])
+    pub fn write_data(
+        w: &mut impl Write,
+        source: &str,
+        output: &str,
+        context: &Context,
+        payload: &[u8],
+    ) -> io::Result<()> {
+        write_frame(
+            w,
+            201,
+            &[
+                source.as_bytes(),
+                output.as_bytes(),
+                &context.span.to_le_bytes(),
+                &context.trace.to_le_bytes(),
+                &context.parent.to_le_bytes(),
+                &context.published_ns.to_le_bytes(),
+                &(context.sampled as u32).to_le_bytes(),
+                payload,
+            ],
+        )
     }
 
     /// `Ok(None)` on a clean end of stream.
     pub fn read_from(r: &mut impl Read) -> io::Result<Option<Self>> {
         let Some((tag, mut f)) = read_frame(r)? else { return Ok(None) };
         let msg = match tag {
-            201 => PeerMsg::Data { source: f.string()?, output: f.string()?, payload: f.bytes()? },
+            201 => PeerMsg::Data {
+                source: f.string()?,
+                output: f.string()?,
+                context: Context {
+                    span: f.u64()?,
+                    trace: f.u64()?,
+                    parent: f.u64()?,
+                    published_ns: f.u64()?,
+                    sampled: f.u32()? != 0,
+                },
+                payload: f.bytes()?,
+            },
             202 => PeerMsg::Closed { node: f.string()? },
             t => return Err(invalid(format!("unknown peer message tag {t}"))),
         };
@@ -221,7 +254,12 @@ mod tests {
         }
 
         let peer = [
-            PeerMsg::Data { source: "camera".into(), output: "frames".into(), payload: vec![7; 1000] },
+            PeerMsg::Data {
+                source: "camera".into(),
+                output: "frames".into(),
+                context: Context { span: 1, trace: 2, parent: 3, published_ns: 4, sampled: true },
+                payload: vec![7; 1000],
+            },
             PeerMsg::Closed { node: "camera".into() },
         ];
         let mut wire = Vec::new();

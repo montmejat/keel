@@ -68,6 +68,9 @@ keel leans on the kernel and on Linux conventions instead of reinventing them:
 | Nodes die with the daemon | `prctl(PR_SET_PDEATHSIG)` |
 | Stop, then insist | `Stop` message → SIGTERM → SIGKILL |
 | Logs | stdout/stderr pipes, prefixed lines |
+| Timestamps | `clock_gettime(CLOCK_MONOTONIC)`, a vDSO call (~20 ns) |
+| Trace data out of the nodes | Lock-free rings and counters in `/dev/shm` files |
+| Aligning machines' clocks | NTP's four-timestamp exchange, over the coordinator's own connection |
 
 The closest relative on Linux is PipeWire (memfd/shared-memory buffers
 between processes, a daemon brokering the graph). The supervision side
@@ -85,7 +88,7 @@ overlaps with systemd.
 4. **Multi-machine** (done): `keel daemon` per machine, `keel run` as the
    coordinator, TCP between daemons, tested with two local daemons and with
    Podman containers.
-5. **Tracing and latency**: timestamps at every hop, traces that follow a
+5. **Tracing and latency** (done): timestamps at every hop, traces that follow a
    message through every node it causes, clock offsets measured by keel
    itself, `keel trace`, a Perfetto export, and a jitter benchmark
    ([0014](decisions/0014-tracing-and-clocks.md)). This comes first because it is
@@ -181,3 +184,11 @@ default 50 µs timer slack lets wake-ups run late on purpose. Loaded, the
 median improves since no CPU sleeps, but the tail reaches milliseconds and one
 deadline in nine is missed. A control loop cares about the max, not the
 median.
+
+### Tracing
+
+Milestone 5 adds a clock read and a few atomic adds per message on each
+side, plus a mutex and a hash lookup on receipt. Alternating runs of the
+benchmark with and without it on the laptop overlap completely (64 B round
+trip 18–27 µs without, 21–27 µs with; 243–262k vs 231–268k msg/s): the cost
+is below this machine's run-to-run noise.

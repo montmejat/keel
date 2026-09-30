@@ -4,6 +4,7 @@
 
 mod fmt;
 mod top;
+mod trace;
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -56,6 +57,17 @@ enum Command {
         #[arg(long)]
         pid: Option<u32>,
     },
+    /// Latency of every input, and the latest sampled traces
+    Trace {
+        /// How many traces to show
+        #[arg(short = 'n', long, default_value_t = 3)]
+        traces: usize,
+        /// Also write the sampled traces as Chrome trace JSON (ui.perfetto.dev)
+        #[arg(long)]
+        export: Option<PathBuf>,
+        #[arg(long)]
+        pid: Option<u32>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -83,11 +95,13 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             Client::connect(pid)?.stop()?;
             println!("stopping dataflow {pid}");
         }
+        Command::Trace { traces, export, pid } => trace::run(pick(pid)?, traces, export.as_deref())?,
     }
     Ok(ExitCode::SUCCESS)
 }
 
-/// The daemon to talk to: the given one, or the only one running.
+/// The daemon to talk to: the given one, the only one running, or the only
+/// coordinator, which sees every machine.
 fn pick(pid: Option<u32>) -> Result<u32, String> {
     if let Some(pid) = pid {
         return Ok(pid);
@@ -96,6 +110,12 @@ fn pick(pid: Option<u32>) -> Result<u32, String> {
         [] => Err("no dataflow or daemon is running".into()),
         [pid] => Ok(pid),
         ref pids => {
+            let coordinators: Vec<u32> = (pids.iter().copied())
+                .filter(|&pid| Client::connect(pid).and_then(|mut c| c.status()).is_ok_and(|s| s.coordinator))
+                .collect();
+            if let [pid] = coordinators[..] {
+                return Ok(pid);
+            }
             let pids: Vec<String> = pids.iter().map(u32::to_string).collect();
             Err(format!("several dataflows are running ({}); pick one with --pid", pids.join(", ")))
         }
@@ -119,7 +139,7 @@ fn ps() -> Result<(), Box<dyn Error>> {
             fmt::duration(Duration::from_millis(status.uptime_ms)),
             format!("{running}/{}", status.nodes.len()),
             state,
-            status.machine.as_deref().unwrap_or("-"),
+            status.machine.as_deref().unwrap_or(if status.coordinator { "(all)" } else { "-" }),
             status.dataflow.as_ref().map_or("-".into(), |d| d.display().to_string())
         );
     }

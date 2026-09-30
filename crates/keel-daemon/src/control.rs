@@ -7,6 +7,7 @@
 //! echo '{"cmd":"status"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/keel/<pid>/control.sock
 //! ```
 
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::runtime;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
     Status,
@@ -26,14 +27,17 @@ pub enum Request {
     },
     /// Stops the dataflow gracefully.
     Stop,
+    /// Latency per input, and the sampled traces still in memory.
+    Trace,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reply {
     Status(Status),
     Logs(Logs),
     Stopping,
+    Trace(TraceReport),
     Error(String),
 }
 
@@ -49,11 +53,17 @@ pub struct Status {
     pub stopping: bool,
     pub nodes: Vec<NodeStatus>,
     pub links: Vec<LinkStatus>,
+    /// A coordinator's view: every machine's nodes and links together.
+    #[serde(default)]
+    pub coordinator: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeStatus {
     pub id: String,
+    /// Where it runs, for a multi-machine dataflow.
+    #[serde(default)]
+    pub machine: Option<String>,
     pub pid: Option<u32>,
     pub state: NodeState,
     /// Shared-memory regions this node sends from.
@@ -103,6 +113,96 @@ pub struct LogLine {
     /// Node id, or `daemon`.
     pub node: String,
     pub text: String,
+}
+
+/// Where the time went, as one daemon or the coordinator saw it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TraceReport {
+    pub inputs: Vec<InputReport>,
+    /// Sampled messages, possibly partial: each machine only knows the hops
+    /// it saw. Times are nanoseconds on one clock: the machine's own, or the
+    /// coordinator's once it has merged the reports.
+    pub spans: Vec<SpanRecord>,
+    /// Trace events nodes couldn't record because their ring was full.
+    pub dropped_events: u64,
+    /// Each machine's clock minus the coordinator's, as last measured.
+    pub clocks: BTreeMap<String, Clock>,
+}
+
+/// One input of one node: how long its messages took to arrive, and to
+/// process.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InputReport {
+    pub node: String,
+    pub input: String,
+    /// `node/output` feeding it.
+    pub source: String,
+    pub machine: Option<String>,
+    pub source_machine: Option<String>,
+    /// Published → taken by the receiver.
+    pub latency: Percentiles,
+    /// Taken → released.
+    pub processing: Percentiles,
+    /// How far off `latency` may be because the two machines' clocks aren't
+    /// perfectly aligned: 0 on one machine, `None` while not yet measured.
+    pub clock_error_ns: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct Percentiles {
+    pub count: u64,
+    pub p50: u64,
+    pub p99: u64,
+    pub p999: u64,
+    pub max: u64,
+}
+
+impl From<keel::trace::Summary> for Percentiles {
+    fn from(s: keel::trace::Summary) -> Self {
+        Self { count: s.count, p50: s.p50, p99: s.p99, p999: s.p999, max: s.max }
+    }
+}
+
+/// A machine's clock relative to the coordinator's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Clock {
+    /// Machine clock minus coordinator clock.
+    pub offset_ns: i64,
+    /// The true offset is within this much of `offset_ns`.
+    pub error_ns: u64,
+}
+
+/// One sampled message and what happened to it, from publish to every
+/// receiver releasing it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SpanRecord {
+    pub span: u64,
+    pub trace: u64,
+    /// 0 for the message that started the trace.
+    pub parent: u64,
+    /// `node/output`, once known.
+    pub source: String,
+    pub source_machine: Option<String>,
+    pub published: Option<u64>,
+    /// The sender's daemon read the descriptor.
+    pub routed: Option<u64>,
+    /// Written to the connection to each machine, by machine.
+    pub net_sent: BTreeMap<String, u64>,
+    /// Read from another machine, by the receiving machine.
+    pub net_received: BTreeMap<String, u64>,
+    pub deliveries: Vec<Delivery>,
+}
+
+/// One receiver of a span.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Delivery {
+    pub node: String,
+    pub input: String,
+    pub machine: Option<String>,
+    /// The daemon sent the descriptor to the node.
+    pub delivered: Option<u64>,
+    pub taken: Option<u64>,
+    pub released: Option<u64>,
 }
 
 /// Serves each connection on its own thread, answering with `handle`.
@@ -169,6 +269,13 @@ impl Client {
     pub fn logs(&mut self, since: u64) -> io::Result<Logs> {
         match self.request(&Request::Logs { since })? {
             Reply::Logs(logs) => Ok(logs),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub fn trace(&mut self) -> io::Result<TraceReport> {
+        match self.request(&Request::Trace)? {
+            Reply::Trace(report) => Ok(report),
             other => Err(unexpected(other)),
         }
     }

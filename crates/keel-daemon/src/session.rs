@@ -31,10 +31,12 @@ use std::time::{Duration, Instant};
 
 use keel::protocol::{DaemonMsg, NodeMsg, PeerMsg, ENV_DAEMON_SOCKET, ENV_NODE_ID, ENV_SHM_DIR};
 use keel::shm::{self, Pool, Region};
+use keel::trace::{self, ENV_NODE_INDEX};
 
-use crate::control::{self, LinkStatus, LogLine, NodeState, NodeStatus, Reply, Request, Status};
+use crate::control::{self, Clock, LinkStatus, LogLine, NodeState, NodeStatus, Reply, Request, Status};
 use crate::dataflow::{Dataflow, NodeConfig, Routes};
 use crate::runtime::SessionFiles;
+use crate::tracing::Tracing;
 use crate::wire::{self, Event};
 
 /// After `Stop`, how long a node gets to exit before SIGTERM, then SIGKILL.
@@ -45,6 +47,8 @@ const TERM_GRACE: Duration = Duration::from_secs(3);
 /// on a slow link, draining takes as long as the queued data does.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const LOG_CAPACITY: usize = 10_000;
+/// How often the nodes' trace events are collected.
+const TRACE_COLLECT_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Spawned nodes, and the threads capturing their output.
 type Spawned = (Vec<(String, Child)>, Vec<JoinHandle<()>>);
@@ -64,6 +68,9 @@ pub(crate) struct Session {
     routes: Routes,
     /// Nodes on a cycle, stopped along with the sources.
     cyclic: HashSet<String>,
+    /// Position of every node in the dataflow, part of its span ids.
+    node_index: HashMap<String, u16>,
+    tracing: Tracing,
     machine: Option<String>,
     /// Node -> machine; empty when everything is local.
     machine_of: HashMap<String, String>,
@@ -163,6 +170,19 @@ impl Session {
             }
         }
 
+        let node_index = (config.dataflow.nodes.iter().enumerate()).map(|(i, n)| (n.id.clone(), i as u16)).collect();
+        let feeds = (graph.routes.iter())
+            .flat_map(|(from, targets)| targets.iter().map(move |to| (to.clone(), from.clone())))
+            .filter(|((node, _), _)| is_local(node))
+            .collect();
+        let tracing = Tracing::new(
+            files.shm_dir.clone(),
+            config.machine.clone(),
+            machine_of.clone(),
+            feeds,
+            local_nodes.iter().map(|n| n.id.clone()),
+        );
+
         let node_listener = UnixListener::bind(&files.nodes_socket)?;
         let session = Arc::new(Session {
             state: Mutex::new(State {
@@ -195,6 +215,8 @@ impl Session {
             }),
             routes: graph.routes,
             cyclic: graph.cyclic,
+            node_index,
+            tracing,
             machine: config.machine,
             machine_of,
             addresses: config.dataflow.machines,
@@ -215,6 +237,16 @@ impl Session {
                     }
                     let session = session.clone();
                     std::thread::spawn(move || session.handle_node(stream));
+                }
+            });
+        }
+
+        {
+            let session = session.clone();
+            std::thread::spawn(move || {
+                while !session.is_closed() {
+                    session.tracing.collect();
+                    std::thread::sleep(TRACE_COLLECT_INTERVAL);
                 }
             });
         }
@@ -298,6 +330,11 @@ impl Session {
         self.state.lock().unwrap().log(node, text);
     }
 
+    /// Clock offsets measured by the coordinator.
+    pub fn set_clocks(&self, clocks: BTreeMap<String, Clock>) {
+        self.tracing.set_clocks(clocks);
+    }
+
     fn emit(&self, event: Event) {
         let _ = self.events.send(event);
     }
@@ -314,6 +351,7 @@ impl Session {
                 self.request_stop();
                 Reply::Stopping
             }
+            Request::Trace => Reply::Trace(self.tracing.report()),
         }
     }
 
@@ -322,6 +360,7 @@ impl Session {
         let nodes = (s.nodes.iter())
             .map(|(id, info)| NodeStatus {
                 id: id.clone(),
+                machine: self.machine.clone(),
                 pid: info.pid,
                 state: info.state.clone(),
                 shm_regions: info.regions.len() as u32,
@@ -351,6 +390,7 @@ impl Session {
             stopping: s.stop_requested || s.stopping,
             nodes,
             links,
+            coordinator: false,
         }
     }
 
@@ -368,6 +408,7 @@ impl Session {
             let mut command = Command::new(&exe);
             command
                 .env(ENV_NODE_ID, &node.id)
+                .env(ENV_NODE_INDEX, self.node_index[&node.id].to_string())
                 .env(ENV_DAEMON_SOCKET, &nodes_socket)
                 .env(ENV_SHM_DIR, &shm_dir)
                 .stdout(Stdio::piped())
@@ -484,7 +525,9 @@ impl Session {
         let mut pools: HashMap<String, Pool> = HashMap::new();
         loop {
             match PeerMsg::read_from(&mut reader) {
-                Ok(Some(PeerMsg::Data { source, output, payload })) => {
+                Ok(Some(PeerMsg::Data { source, output, mut context, payload })) => {
+                    let received = trace::now_ns();
+                    context.published_ns = self.tracing.to_local(context.published_ns, &source);
                     let pool =
                         pools.entry(source.clone()).or_insert_with(|| Pool::new(self.shm_dir.clone(), source.clone()));
                     let slot = match pool.acquire(payload.len()) {
@@ -495,7 +538,11 @@ impl Session {
                         }
                     };
                     pool.payload_mut(slot, payload.len()).copy_from_slice(&payload);
+                    pool.region(slot).set_context(&context);
                     pool.publish(slot);
+                    if context.sampled {
+                        self.tracing.net_received(&context, &source, &output, received);
+                    }
                     self.deliver(&source, &output, slot, payload.len() as u64, pool.region(slot), false);
                 }
                 Ok(Some(PeerMsg::Closed { node })) => self.node_disconnected(&node),
@@ -512,6 +559,10 @@ impl Session {
     /// `source/output`, and with `forward`, to other machines. Consumes the
     /// in-transit reference.
     fn deliver(&self, source: &str, output: &str, slot: u32, len: u64, region: &Region, forward: bool) {
+        let context = region.context();
+        if context.sampled && forward {
+            self.tracing.routed(&context, source, output, trace::now_ns());
+        }
         let key = (source.to_owned(), output.to_owned());
         let writers: Vec<_> = {
             let mut s = self.state.lock().unwrap();
@@ -520,7 +571,7 @@ impl Session {
             counter.0 += 1;
             counter.1 += len;
             (self.routes.get(&key).into_iter().flatten())
-                .filter_map(|(target, input_id)| Some((s.writers.get(target)?.clone(), input_id)))
+                .filter_map(|(target, input_id)| Some((s.writers.get(target)?.clone(), target, input_id)))
                 .collect()
         };
         if let Some(machines) = self.remote_targets.get(&key).filter(|_| forward) {
@@ -528,16 +579,21 @@ impl Session {
             let payload = unsafe { region.payload_slice(len as usize) };
             for machine in machines {
                 let Some(peer) = self.peers.lock().unwrap().get(machine).cloned() else { continue };
-                let written = PeerMsg::write_data(&mut *peer.lock().unwrap(), source, output, payload);
+                let written = PeerMsg::write_data(&mut *peer.lock().unwrap(), source, output, &context, payload);
                 if let Err(e) = written {
                     self.peers.lock().unwrap().remove(machine);
                     self.log("daemon", format!("lost the data connection to machine `{machine}`: {e}"));
+                } else if context.sampled {
+                    self.tracing.net_sent(&context, machine, trace::now_ns());
                 }
             }
         }
-        for (writer, input_id) in writers {
+        for (writer, target, input_id) in writers {
             // Take the receiver's reference before it can see the message.
             region.refcount().fetch_add(1, Ordering::Relaxed);
+            if context.sampled {
+                self.tracing.delivered(&context, target, input_id, trace::now_ns());
+            }
             let msg = DaemonMsg::Input { input_id: input_id.clone(), source: source.to_owned(), slot, len };
             if msg.write_to(&mut *writer.lock().unwrap()).is_err() {
                 // The target has exited; it will never release it.

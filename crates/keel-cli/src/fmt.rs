@@ -33,6 +33,16 @@ pub fn bytes(n: f64) -> String {
     }
 }
 
+/// A duration in nanoseconds: `850ns`, `12.3µs`, `4.56ms`, `1.23s`
+pub fn nanos(ns: u64) -> String {
+    match ns {
+        0..1_000 => format!("{ns}ns"),
+        1_000..1_000_000 => format!("{:.1}µs", ns as f64 / 1e3),
+        1_000_000..1_000_000_000 => format!("{:.2}ms", ns as f64 / 1e6),
+        _ => format!("{:.2}s", ns as f64 / 1e9),
+    }
+}
+
 /// `0`, `29.9`, `1.2k`, `340k`
 pub fn rate(n: f64) -> String {
     match n {
@@ -57,5 +67,8 @@ mod tests {
         assert_eq!(bytes(6_220_800.0), "5.9 MiB");
         assert_eq!(rate(29.94), "29.9");
         assert_eq!(rate(342_654.0), "343k");
+        assert_eq!(nanos(850), "850ns");
+        assert_eq!(nanos(12_345), "12.3µs");
+        assert_eq!(nanos(4_561_000), "4.56ms");
     }
 }

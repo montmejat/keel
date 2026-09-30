@@ -18,6 +18,7 @@ use crate::runtime::{RuntimeDir, SessionFiles};
 use crate::session::{Session, SessionConfig};
 use crate::signals;
 use crate::wire::{self, Event, ToDaemon};
+use keel::trace;
 
 struct Daemon {
     runtime_dir: PathBuf,
@@ -81,9 +82,10 @@ fn idle_reply(request: Request) -> Reply {
             stopping: false,
             nodes: Vec::new(),
             links: Vec::new(),
+            coordinator: false,
         }),
         Request::Logs { .. } => Reply::Logs(control::Logs { lines: Vec::new(), next: 0 }),
-        Request::Stop => Reply::Error("no dataflow is running".into()),
+        Request::Stop | Request::Trace => Reply::Error("no dataflow is running".into()),
     }
 }
 
@@ -162,6 +164,14 @@ impl Daemon {
                 }
                 Ok(Some(ToDaemon::Stop)) => session.stop(),
                 Ok(Some(ToDaemon::Abort)) => session.abort(),
+                Ok(Some(ToDaemon::Ping { t1 })) => {
+                    let t2 = trace::now_ns();
+                    send(&Event::Pong { t1, t2, t3: trace::now_ns() })?;
+                }
+                Ok(Some(ToDaemon::Clocks { clocks })) => session.set_clocks(clocks),
+                Ok(Some(ToDaemon::Control { id, request })) => {
+                    send(&Event::Control { id, reply: session.handle(request) })?;
+                }
                 Ok(Some(ToDaemon::Spawn { .. })) => {
                     send(&Event::Error { message: "already running a dataflow".into() })?;
                 }

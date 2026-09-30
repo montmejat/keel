@@ -56,3 +56,21 @@ milliseconds apart, when a local hop takes ~20 µs.
   be put on one timeline. Each machine's own traces stay valid.
 - Across machines, precision is limited by how well the offset is known:
   a few hundred µs over Wi-Fi, better on Ethernet.
+
+## Amended while implementing (milestone 5)
+- **Histograms live with the receivers, not the daemon.** Each node keeps,
+  per input, latency and processing histograms in a `<node>.stats` file in
+  shared memory (log-linear buckets, within 12.5%), which the daemon reads.
+  That's how every message gets counted without the daemon seeing every
+  event. Per-hop timings (send, daemon, network, route, wake) come from
+  sampled traces only.
+- **Sampling:** a source starts at most one sampled trace every 100 ms;
+  everything a sampled message causes is sampled too.
+- **"Caused by" means "held while sending":** an output belongs to the trace
+  of the latest input whose sample the node still holds. A node that drops
+  its sample before sending starts a new trace.
+- **The coordinator got a control socket.** `keel trace` (and `ps`, `logs`,
+  `stop`) talk to it and it asks the daemons, so one command sees every
+  machine. Tools pick the coordinator when several daemons run on one host.
+- Measured on a Wi-Fi Pi 3: its clock offset is known within ~2–4 ms; on
+  one host, within ~35–75 µs.

@@ -3,10 +3,11 @@
 //!
 //! Each node owns a small pool of regions, one file per region in the
 //! daemon's shared-memory directory, named `<node>.<slot>`. A region starts
-//! with a header holding a reference count, followed by the payload:
+//! with a header holding a reference count and the message's trace context
+//! (see [`crate::trace`]), followed by the payload:
 //!
 //! ```text
-//! [refcount: AtomicU32][padding to HEADER_LEN][payload ...]
+//! [refcount: u32][flags: u32][span: u64][trace: u64][parent: u64][published: u64][padding to 64][payload ...]
 //! ```
 //!
 //! A region is free when its count is 0. The sender sets it to 1 (a reference
@@ -19,8 +20,10 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+use crate::trace::Context;
 
 const HEADER_LEN: usize = 64;
 const MIN_CAPACITY: usize = 4096 - HEADER_LEN;
@@ -78,6 +81,37 @@ impl Region {
         unsafe { &*self.ptr.as_ptr().cast::<AtomicU32>() }
     }
 
+    fn header_u64(&self, index: usize) -> &AtomicU64 {
+        // SAFETY: indexes 1..=4 are 8-byte aligned words within HEADER_LEN.
+        unsafe { &*self.ptr.as_ptr().cast::<AtomicU64>().add(index) }
+    }
+
+    /// The trace context of the message in this region. Readers must hold a
+    /// reference; the writer sets it before `publish`.
+    pub fn context(&self) -> Context {
+        // SAFETY: word 0 holds the refcount then the flags.
+        let flags = unsafe { &*self.ptr.as_ptr().cast::<AtomicU32>().add(1) };
+        Context {
+            span: self.header_u64(1).load(Ordering::Relaxed),
+            trace: self.header_u64(2).load(Ordering::Relaxed),
+            parent: self.header_u64(3).load(Ordering::Relaxed),
+            published_ns: self.header_u64(4).load(Ordering::Relaxed),
+            sampled: flags.load(Ordering::Relaxed) & 1 != 0,
+        }
+    }
+
+    /// Only while no one else holds a reference: the sender before `publish`,
+    /// or the daemon filling a region it received from another machine.
+    pub fn set_context(&self, context: &Context) {
+        // SAFETY: as in `context`.
+        let flags = unsafe { &*self.ptr.as_ptr().cast::<AtomicU32>().add(1) };
+        flags.store(context.sampled as u32, Ordering::Relaxed);
+        self.header_u64(1).store(context.span, Ordering::Relaxed);
+        self.header_u64(2).store(context.trace, Ordering::Relaxed);
+        self.header_u64(3).store(context.parent, Ordering::Relaxed);
+        self.header_u64(4).store(context.published_ns, Ordering::Relaxed);
+    }
+
     /// Payload bytes this mapping covers.
     pub fn capacity(&self) -> usize {
         self.map_len - HEADER_LEN
@@ -99,6 +133,80 @@ impl Drop for Region {
     fn drop(&mut self) {
         // SAFETY: unmapping exactly what `map` mapped.
         unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.map_len) };
+    }
+}
+
+/// A whole file mapped shared, for the tracing files next to the regions.
+pub struct Mapping {
+    ptr: NonNull<u8>,
+    len: usize,
+}
+
+// SAFETY: plain shared memory, accessed through atomics or under the
+// protocols documented by its users.
+unsafe impl Send for Mapping {}
+unsafe impl Sync for Mapping {}
+
+impl Mapping {
+    /// Creates `path` with `len` zeroed bytes (sparse: pages cost memory only
+    /// once touched) and maps it.
+    pub fn create(path: &Path, len: usize) -> io::Result<Self> {
+        let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)?;
+        file.set_len(len as u64)?;
+        Self::map(&file, len)
+    }
+
+    /// Maps an existing file, which must be at least `len` bytes.
+    pub fn open(path: &Path, len: usize) -> io::Result<Self> {
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        if (file.metadata()?.len() as usize) < len {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("{} is too short", path.display())));
+        }
+        Self::map(&file, len)
+    }
+
+    fn map(file: &File, len: usize) -> io::Result<Self> {
+        // SAFETY: mapping a file we hold open, checked below.
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                std::os::fd::AsRawFd::as_raw_fd(file),
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { ptr: NonNull::new(ptr.cast()).unwrap(), len })
+    }
+
+    pub fn ptr(&self) -> *mut u8 {
+        self.ptr.as_ptr()
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The `AtomicU64` at byte `offset`, which must be 8-byte aligned.
+    pub fn u64_at(&self, offset: usize) -> &AtomicU64 {
+        assert!(offset.is_multiple_of(8) && offset + 8 <= self.len);
+        // SAFETY: aligned and in bounds, checked above.
+        unsafe { &*self.ptr.as_ptr().add(offset).cast::<AtomicU64>() }
+    }
+}
+
+impl Drop for Mapping {
+    fn drop(&mut self) {
+        // SAFETY: unmapping exactly what `map` mapped.
+        unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.len) };
     }
 }
 

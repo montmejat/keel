@@ -50,6 +50,28 @@ Or with each machine in its own container (Podman):
 `examples/containers/run.sh`. Daemons have no authentication: anyone who
 can reach one can run programs through it, so only listen on trusted networks.
 
+### Where the time goes
+
+Every message is traced. `keel trace` shows each input's latency (publish →
+taken) and processing time (taken → released) as percentiles, then the latest
+sampled traces: one message followed through every hop and every node it
+caused, across machines too.
+
+```sh
+./target/debug/keel trace                 # while a dataflow runs
+./target/debug/keel trace --export t.json # open in ui.perfetto.dev
+```
+
+```
+camera/frames@robot #11: 7.63s end to end
+  → detector/frames@base  7.49s  [send 6.51s, daemon 680ms, network 302ms, route 1.30ms, wake 42.5µs]  then processing 140µs
+    detector/brightness #11
+      → recorder/brightness@robot  132ms  [send 18.2µs, daemon 34.8µs, network 130ms, route 86.9µs, wake 2.01ms]  then processing 11.8µs
+```
+
+(A Raspberry Pi on Wi-Fi sending 6 MB frames to a laptop: the frame waited
+6.5 s in the camera's queue before its daemon could send it.)
+
 Other examples: `keel run examples/dataflow.yml` (talker/listener), and the
 benchmarks: `cargo build --release`, then `./target/release/keel run examples/bench.yml`
 (latency, throughput) or `examples/jitter.yml` (a 1 kHz loop).

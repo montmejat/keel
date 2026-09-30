@@ -15,6 +15,7 @@ pub mod dataflow;
 pub mod runtime;
 mod session;
 mod signals;
+mod tracing;
 pub mod wire;
 
 use std::io;
