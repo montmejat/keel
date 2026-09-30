@@ -40,6 +40,8 @@ pub struct Graph {
     pub routes: Routes,
     /// Nodes each node receives inputs from.
     pub upstream: HashMap<String, HashSet<String>>,
+    /// Nodes on a cycle. Stopping can't cascade to them from the sources.
+    pub cyclic: HashSet<String>,
 }
 
 impl Dataflow {
@@ -96,8 +98,24 @@ impl Dataflow {
             }
             upstream.insert(node.id.clone(), sources);
         }
-        Ok(Graph { routes, upstream })
+        let cyclic = ids.iter().filter(|id| reaches(&upstream, id, id)).map(|id| id.to_string()).collect();
+        Ok(Graph { routes, upstream, cyclic })
     }
+}
+
+/// Whether `to` is upstream of `from`, directly or not.
+fn reaches(upstream: &HashMap<String, HashSet<String>>, from: &str, to: &str) -> bool {
+    let mut seen = HashSet::new();
+    let mut todo: Vec<&str> = upstream[from].iter().map(String::as_str).collect();
+    while let Some(id) = todo.pop() {
+        if id == to {
+            return true;
+        }
+        if seen.insert(id) {
+            todo.extend(upstream[id].iter().map(String::as_str));
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -122,6 +140,20 @@ mod tests {
         assert_eq!(to, [("b".into(), "x".into()), ("c".into(), "y".into())]);
         assert_eq!(graph.upstream["c"], HashSet::from(["a".into(), "b".into()]));
         assert!(graph.upstream["a"].is_empty());
+    }
+
+    #[test]
+    fn finds_cycles() {
+        let graph = resolve(
+            "nodes:
+              - { id: a, path: a }
+              - { id: b, path: b, inputs: { x: a/out, y: c/out } }
+              - { id: c, path: c, inputs: { x: b/out } }
+              - { id: d, path: d, inputs: { x: c/out } }
+              - { id: e, path: e, inputs: { x: e/out } }",
+        )
+        .unwrap();
+        assert_eq!(graph.cyclic, HashSet::from(["b".into(), "c".into(), "e".into()]));
     }
 
     #[test]

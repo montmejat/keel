@@ -14,9 +14,11 @@ Use what Linux already offers for process supervision:
   daemon is killed, instead of lingering as orphans.
 - **Log capture:** node stdout/stderr go through pipes to the daemon, which
   prefixes each line and keeps it for `keel logs` and `keel top`.
-- **Stop drains the dataflow:** sources get `Stop` first. Every other node
-  gets it once all its upstream nodes have exited, so messages in flight are
-  delivered. Nodes not reached that way, as in cycles, get `Stop` after 5 s.
+- **Stop drains the dataflow:** sources and nodes on cycles get `Stop` first.
+  Every other node gets it once all its upstream nodes have exited, so
+  messages in flight are delivered, however long a slow link takes. If
+  nothing moves for 5 s (no message delivered, no node gone), every node gets
+  `Stop`.
 - **Escalation, per node:** `Stop`, then SIGTERM 2 s later, then SIGKILL 3 s
   after that. A node that dies of a SIGTERM we sent counts as a clean exit.
 - A second Ctrl-C kills everything at once. A node failing outside a stop

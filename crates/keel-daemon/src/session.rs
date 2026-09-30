@@ -40,7 +40,9 @@ use crate::wire::{self, Event};
 /// After `Stop`, how long a node gets to exit before SIGTERM, then SIGKILL.
 const STOP_GRACE: Duration = Duration::from_secs(2);
 const TERM_GRACE: Duration = Duration::from_secs(3);
-/// After a stop request, how long `Stop` may take to cascade from the sources.
+/// While stopping, how long the dataflow may go without progress (a message
+/// delivered, a node gone) before every node gets `Stop`. Only a safety net:
+/// on a slow link, draining takes as long as the queued data does.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const LOG_CAPACITY: usize = 10_000;
 
@@ -60,6 +62,8 @@ pub(crate) struct SessionConfig {
 pub(crate) struct Session {
     state: Mutex<State>,
     routes: Routes,
+    /// Nodes on a cycle, stopped along with the sources.
+    cyclic: HashSet<String>,
     machine: Option<String>,
     /// Node -> machine; empty when everything is local.
     machine_of: HashMap<String, String>,
@@ -90,6 +94,8 @@ struct State {
     next_log: u64,
     /// Log lines also go to the coordinator.
     forward_logs: Option<Sender<Event>>,
+    /// Last time a message was delivered or a node went away.
+    last_progress: Instant,
     stop_requested: bool,
     stopping: bool,
     aborted: bool,
@@ -181,12 +187,14 @@ impl Session {
                 logs: VecDeque::new(),
                 next_log: 0,
                 forward_logs: config.machine.is_some().then(|| events.clone()),
+                last_progress: Instant::now(),
                 stop_requested: false,
                 stopping: false,
                 aborted: false,
                 closed: false,
             }),
             routes: graph.routes,
+            cyclic: graph.cyclic,
             machine: config.machine,
             machine_of,
             addresses: config.dataflow.machines,
@@ -440,6 +448,8 @@ impl Session {
                                 }
                                 region
                             }
+                            // The session is over and removed its files.
+                            Err(_) if self.is_closed() => break,
                             Err(err) => {
                                 self.log(
                                     "daemon",
@@ -505,6 +515,7 @@ impl Session {
         let key = (source.to_owned(), output.to_owned());
         let writers: Vec<_> = {
             let mut s = self.state.lock().unwrap();
+            s.last_progress = Instant::now();
             let counter = s.counters.entry(key.clone()).or_default();
             counter.0 += 1;
             counter.1 += len;
@@ -542,6 +553,7 @@ impl Session {
     fn node_disconnected(&self, node_id: &str) {
         {
             let mut s = self.state.lock().unwrap();
+            s.last_progress = Instant::now();
             s.writers.remove(node_id);
             let mut to_stop = Vec::new();
             for (id, sources) in s.upstream.iter_mut() {
@@ -562,10 +574,11 @@ impl Session {
 
     /// Waits for all local nodes to exit. If one fails, kills the others.
     ///
-    /// Stopping drains the dataflow: sources get `Stop` first, and each node
-    /// gets it once all its upstream nodes have exited, so no in-flight message
-    /// is dropped. Nodes not reached that way (cycles) get it after
-    /// `DRAIN_TIMEOUT`. A node that ignores `Stop` gets SIGTERM, then SIGKILL.
+    /// Stopping drains the dataflow: sources and nodes on cycles get `Stop`
+    /// first, and each other node gets it once all its upstream nodes have
+    /// exited, so no in-flight message is dropped. If that stalls for
+    /// `DRAIN_TIMEOUT`, every node gets it. A node that ignores `Stop` gets
+    /// SIGTERM, then SIGKILL.
     fn supervise(&self, mut children: Vec<(String, Child)>) -> bool {
         let mut ok = true;
         let mut stop_started: Option<Instant> = None;
@@ -577,6 +590,7 @@ impl Session {
                     Ok(Some(status)) => {
                         let (id, _) = children.remove(i);
                         let mut s = self.state.lock().unwrap();
+                        s.last_progress = Instant::now();
                         // A node we terminated did what it was asked.
                         let terminated = s.nodes[&id].terminated && status.signal() == Some(libc::SIGTERM);
                         let success = status.success() || terminated;
@@ -610,14 +624,17 @@ impl Session {
             let mut s = self.state.lock().unwrap();
             if s.stopping && stop_started.is_none() {
                 stop_started = Some(Instant::now());
+                s.last_progress = Instant::now();
                 s.log("daemon", "stopping the dataflow, starting with its sources".into());
-                let sources: Vec<String> =
-                    (s.upstream.iter()).filter(|(_, up)| up.is_empty()).map(|(id, _)| id.clone()).collect();
+                let sources: Vec<String> = (s.upstream.iter())
+                    .filter(|(id, up)| up.is_empty() || self.cyclic.contains(*id))
+                    .map(|(id, _)| id.clone())
+                    .collect();
                 for id in sources {
                     send_stop(&mut s, &id);
                 }
             }
-            if !drained && stop_started.is_some_and(|t| t.elapsed() > DRAIN_TIMEOUT) {
+            if !drained && stop_started.is_some() && s.last_progress.elapsed() > DRAIN_TIMEOUT {
                 drained = true;
                 let ids: Vec<String> = s.nodes.keys().cloned().collect();
                 let stuck =
@@ -625,7 +642,7 @@ impl Session {
                 if ids.iter().any(|id| stuck(&s.nodes[id])) {
                     s.log(
                         "daemon",
-                        format!("dataflow not drained after {DRAIN_TIMEOUT:?}, stopping the remaining nodes"),
+                        format!("dataflow stalled for {DRAIN_TIMEOUT:?} while stopping, stopping the remaining nodes"),
                     );
                 }
                 for id in ids {
