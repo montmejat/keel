@@ -14,7 +14,7 @@ machines, daemons forward payloads over TCP. Linux only.
 crates/keel          node API
 crates/keel-daemon   runs dataflows: sessions, coordinator, daemon, control API
 crates/keel-cli      the `keel` command, including the `keel top` TUI
-examples/            talker/listener, a camera pipeline, a benchmark, each also
+examples/            talker/listener, a camera pipeline, benchmarks, each also
                      across two machines; containers/ runs them in Podman
 ```
 
@@ -51,7 +51,8 @@ Or with each machine in its own container (Podman):
 can reach one can run programs through it, so only listen on trusted networks.
 
 Other examples: `keel run examples/dataflow.yml` (talker/listener), and the
-benchmark: `cargo build --release && ./target/release/keel run examples/bench.yml`.
+benchmarks: `cargo build --release`, then `./target/release/keel run examples/bench.yml`
+(latency, throughput) or `examples/jitter.yml` (a 1 kHz loop).
 
 ## Dataflow
 

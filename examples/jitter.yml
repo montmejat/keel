@@ -1,0 +1,14 @@
+# Jitter of a 1 kHz loop through keel: how late each wake-up is, and the round
+# trip to another node. Build with `cargo build --release` first. To see it
+# under load, run one busy loop per core alongside:
+#   for i in $(seq $(nproc)); do yes > /dev/null & done   # stop: pkill yes
+nodes:
+  - id: ticker
+    path: ../target/release/jitter-ticker
+    inputs:
+      pong: echo/pong
+
+  - id: echo
+    path: ../target/release/jitter-echo
+    inputs:
+      ping: ticker/ping

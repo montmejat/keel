@@ -156,3 +156,28 @@ With shared memory, latency is flat at ~20 µs whatever the size: an 8 MiB frame
 writes the payload, so it isn't memory bandwidth; `msg/s` is the meaningful
 number. A real producer writing an 8 MiB frame pays for that write once, in
 place, and nothing else does.
+
+### Jitter
+
+`examples/jitter.yml`: a 1 kHz loop wakes on an absolute deadline
+(`clock_nanosleep`), then does a 64 B round trip through keel. 10,000 ticks.
+"Loaded" is one `yes > /dev/null` per core. Milestone 5 baseline, before any
+real-time work: normal scheduling, no pinning, stock kernels.
+
+```
+                        wake-up late                   round trip             missed
+                    p50     p99   p99.9    max     p50     p99   p99.9    max
+laptop  idle     96.8µs   146µs   191µs  384µs   328µs   437µs   529µs  1.3ms      0.0%
+laptop  loaded   56.3µs   1.8ms   3.7ms  7.7ms  65.4µs   2.8ms   4.0ms 14.8ms     11.1%
+Pi 3    idle     67.6µs  75.9µs   123µs  4.0ms   176µs   245µs   816µs  3.2ms      0.2%
+Pi 3    loaded   62.6µs  67.8µs   3.7ms  3.7ms   127µs   4.7ms   5.7ms  8.7ms     12.7%
+```
+
+(Laptop: 12 cores, Fedora `PREEMPT_DYNAMIC`. Pi: 4 cores, 6.12 `rpi-v8`.)
+
+Idle, the median round trip is 330 µs against ~20 µs back to back: between
+ticks the CPUs sleep in low-power states and take time to wake, and the
+default 50 µs timer slack lets wake-ups run late on purpose. Loaded, the
+median improves since no CPU sleeps, but the tail reaches milliseconds and one
+deadline in nine is missed. A control loop cares about the max, not the
+median.
