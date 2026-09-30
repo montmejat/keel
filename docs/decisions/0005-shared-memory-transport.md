@@ -1,6 +1,7 @@
 # 0005: Zero-copy local transport over shared memory
 
 **Status:** Proposed, 2026-09-24. Implemented in milestone 2, awaiting review.
+Descriptors no longer go through the daemon: see [0015](0015-realtime-data-plane.md).
 
 ## Context
 Baseline ([architecture](../architecture.md#benchmarks)): an 8 MiB message

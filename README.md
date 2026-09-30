@@ -6,9 +6,11 @@ deployment, provisioning and tooling. See [docs/architecture.md](docs/architectu
 and the [decision records](docs/decisions/).
 
 Today: dataflows run on one machine or across several. On a machine, nodes
-exchange payloads through shared memory, zero-copy, and a daemon forwards
-small descriptors, supervises the nodes and serves a control API. Between
-machines, daemons forward payloads over TCP. Linux only.
+exchange payloads through shared memory, zero-copy, and pass descriptors to
+each other through lock-free rings with futex wake-ups: 5.6 µs round trip,
+5 M msg/s. A daemon per machine sets this up, supervises the nodes (with
+real-time scheduling if asked), serves a control API, and forwards payloads
+over TCP between machines. Every message is traced. Linux only.
 
 ```
 crates/keel          node API
@@ -85,6 +87,23 @@ nodes:
     inputs:
       count: talker/count            # <input>: <node>/<output>
 ```
+
+An input can also keep only the newest message, so that a slow reader (a
+recorder, a viewer) never holds its sender back; and a node can ask for
+real-time scheduling:
+
+```yaml
+  - id: controller
+    path: ../target/release/controller
+    rt: { priority: 80, cpus: [3] }  # SCHED_FIFO 80, pinned to CPU 3
+    inputs:
+      state: estimator/state
+      camera: { source: camera/frames, keep: latest }
+```
+
+Real-time priority needs the privilege: an rtprio limit (e.g.
+`/etc/security/limits.d/keel.conf` with `<user> - rtprio 95`), or
+`CAP_SYS_NICE`. Without it the daemon says so, and the rest applies.
 
 The daemon starts nodes only once every node has registered, so no message is
 lost at startup. A node receives `Stop` once all of its upstream nodes have

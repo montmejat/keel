@@ -1,0 +1,16 @@
+# The jitter benchmark with real-time settings: SCHED_FIFO priority 80, each
+# node pinned to its own CPU, 1 ns timer slack and locked memory. Real-time
+# priority needs the privilege (an rtprio limit in /etc/security/limits.d, or
+# CAP_SYS_NICE); without it the daemon says so and the rest still applies.
+nodes:
+  - id: ticker
+    path: ../target/release/jitter-ticker
+    rt: { priority: 80, cpus: [2] }
+    inputs:
+      pong: echo/pong
+
+  - id: echo
+    path: ../target/release/jitter-echo
+    rt: { priority: 80, cpus: [3] }
+    inputs:
+      ping: ticker/ping

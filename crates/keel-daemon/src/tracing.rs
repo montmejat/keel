@@ -109,11 +109,8 @@ impl Tracing {
         }
     }
 
-    /// Drains the nodes' event rings into span records.
-    pub fn collect(&self) {
-        let mut guard = self.inner.lock().unwrap();
-        let inner = &mut *guard;
-        let machine = self.machine.clone();
+    /// Opens the files of nodes that have created theirs since last time.
+    fn open_files(&self, inner: &mut Inner) {
         for (node, files) in inner.files.iter_mut() {
             if files.stats.is_none() {
                 files.stats = StatsReader::open(&self.shm_dir, node).ok();
@@ -121,6 +118,29 @@ impl Tracing {
             if files.events.is_none() {
                 files.events = EventReader::open(&self.shm_dir, node).ok();
             }
+        }
+    }
+
+    /// `(node, output, messages, bytes)` sent by each local node.
+    pub fn outputs(&self) -> Vec<(String, String, u64, u64)> {
+        let mut inner = self.inner.lock().unwrap();
+        self.open_files(&mut inner);
+        let stats = inner.files.iter().filter_map(|(node, files)| Some((node, files.stats.as_ref()?)));
+        stats.flat_map(|(node, stats)| stats.outputs().into_iter().map(|(o, n, b)| (node.clone(), o, n, b))).collect()
+    }
+
+    /// Messages sent by local nodes so far: moves as long as the dataflow does.
+    pub fn messages_sent(&self) -> u64 {
+        self.outputs().iter().map(|(_, _, n, _)| n).sum()
+    }
+
+    /// Drains the nodes' event rings into span records.
+    pub fn collect(&self) {
+        let mut guard = self.inner.lock().unwrap();
+        self.open_files(&mut guard);
+        let inner = &mut *guard;
+        let machine = self.machine.clone();
+        for (node, files) in inner.files.iter_mut() {
             let Some(events) = &files.events else { continue };
             inner.events.clear();
             events.drain(&mut inner.events);
@@ -136,10 +156,9 @@ impl Tracing {
                 let record = |span: &mut SpanRecord| match event.kind {
                     trace::PUBLISHED => {
                         span.published = Some(event.t_ns);
-                        // Until the daemon routes it and learns the output.
-                        if span.source.is_empty() {
-                            span.source = format!("{node}/?");
-                        }
+                        let output = files.stats.as_ref().and_then(|s| s.output_name(event.aux as usize));
+                        span.source = format!("{node}/{}", output.as_deref().unwrap_or("?"));
+                        span.source_machine = machine.clone();
                     }
                     trace::TAKEN => span.delivery(node, &input(), machine.clone()).taken = Some(event.t_ns),
                     trace::RELEASED => span.delivery(node, &input(), machine.clone()).released = Some(event.t_ns),

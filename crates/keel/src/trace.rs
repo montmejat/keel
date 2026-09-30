@@ -128,30 +128,58 @@ impl Summary {
     }
 }
 
-// The stats file: a header, then one slot per input.
+// The stats file: a header, one slot per input, then one per output.
 //
-//   [inputs: u64][padding to 64]
-//   slot: [name_len: u64][name: 56 bytes][max_latency: u64][max_processing: u64]
-//         [padding to 128][latency: BUCKETS × u64][processing: BUCKETS × u64]
+//   [inputs: u64][outputs: u64][padding to 64]
+//   input:  [name_len: u64][name: 56 bytes][max_latency: u64][max_processing: u64]
+//           [padding to 128][latency: BUCKETS × u64][processing: BUCKETS × u64]
+//   output: [name_len: u64][name: 56 bytes][messages: u64][bytes: u64][padding to 128]
 
 pub const MAX_INPUTS: usize = 32;
+pub const MAX_OUTPUTS: usize = 32;
 const NAME_LEN: usize = 56;
 const SLOT_LEN: usize = 128 + 2 * BUCKETS * 8;
-pub const STATS_LEN: usize = 64 + MAX_INPUTS * SLOT_LEN;
+const OUTPUT_LEN: usize = 128;
+const OUTPUTS_AT: usize = 64 + MAX_INPUTS * SLOT_LEN;
+pub const STATS_LEN: usize = OUTPUTS_AT + MAX_OUTPUTS * OUTPUT_LEN;
 
 fn slot_offset(slot: usize) -> usize {
     64 + slot * SLOT_LEN
+}
+
+fn output_offset(slot: usize) -> usize {
+    OUTPUTS_AT + slot * OUTPUT_LEN
+}
+
+/// Writes a name at `base` (`[len: u64][bytes]`) before it's published.
+fn write_name(map: &Mapping, base: usize, name: &str) {
+    let name = &name.as_bytes()[..name.len().min(NAME_LEN)];
+    // SAFETY: in bounds; readers only look at slots below the published count.
+    unsafe { std::ptr::copy_nonoverlapping(name.as_ptr(), map.ptr().add(base + 8), name.len()) };
+    map.u64_at(base).store(name.len() as u64, Ordering::Relaxed);
+}
+
+fn read_name(map: &Mapping, base: usize) -> String {
+    let len = (map.u64_at(base).load(Ordering::Relaxed) as usize).min(NAME_LEN);
+    // SAFETY: in bounds; written before the count that made it visible.
+    let name = unsafe { std::slice::from_raw_parts(map.ptr().add(base + 8), len) };
+    String::from_utf8_lossy(name).into_owned()
 }
 
 /// The node's side of its stats file.
 pub struct StatsWriter {
     map: Mapping,
     slots: Mutex<HashMap<String, usize>>,
+    outputs: Mutex<HashMap<String, usize>>,
 }
 
 impl StatsWriter {
     pub fn create(dir: &Path, node_id: &str) -> io::Result<Self> {
-        Ok(Self { map: Mapping::create(&stats_path(dir, node_id), STATS_LEN)?, slots: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            map: Mapping::create(&stats_path(dir, node_id), STATS_LEN)?,
+            slots: Mutex::new(HashMap::new()),
+            outputs: Mutex::new(HashMap::new()),
+        })
     }
 
     /// The slot of `input`, registering it on first use. `None` once all
@@ -165,15 +193,32 @@ impl StatsWriter {
         if slot == MAX_INPUTS {
             return None;
         }
-        let name = &input.as_bytes()[..input.len().min(NAME_LEN)];
-        let base = slot_offset(slot);
-        // SAFETY: in bounds; readers only look at slots below `inputs`, which
-        // is published after the name.
-        unsafe { std::ptr::copy_nonoverlapping(name.as_ptr(), self.map.ptr().add(base + 8), name.len()) };
-        self.map.u64_at(base).store(name.len() as u64, Ordering::Relaxed);
+        write_name(&self.map, slot_offset(slot), input);
         self.map.u64_at(0).store(slot as u64 + 1, Ordering::Release);
         slots.insert(input.to_owned(), slot);
         Some(slot)
+    }
+
+    /// Like [`StatsWriter::slot`], for an output's counters.
+    pub fn output_slot(&self, output: &str) -> Option<usize> {
+        let mut outputs = self.outputs.lock().unwrap();
+        if let Some(&slot) = outputs.get(output) {
+            return Some(slot);
+        }
+        let slot = outputs.len();
+        if slot == MAX_OUTPUTS {
+            return None;
+        }
+        write_name(&self.map, output_offset(slot), output);
+        self.map.u64_at(8).store(slot as u64 + 1, Ordering::Release);
+        outputs.insert(output.to_owned(), slot);
+        Some(slot)
+    }
+
+    pub fn record_output(&self, slot: usize, bytes: u64) {
+        let base = output_offset(slot);
+        self.map.u64_at(base + 64).fetch_add(1, Ordering::Relaxed);
+        self.map.u64_at(base + 72).fetch_add(bytes, Ordering::Relaxed);
     }
 
     pub fn record_latency(&self, slot: usize, ns: u64) {
@@ -211,11 +256,26 @@ impl StatsReader {
         if slot >= self.map.u64_at(0).load(Ordering::Acquire) as usize {
             return None;
         }
-        let base = slot_offset(slot);
-        let len = (self.map.u64_at(base).load(Ordering::Relaxed) as usize).min(NAME_LEN);
-        // SAFETY: in bounds; the name was written before `inputs` was published.
-        let name = unsafe { std::slice::from_raw_parts(self.map.ptr().add(base + 8), len) };
-        Some(String::from_utf8_lossy(name).into_owned())
+        Some(read_name(&self.map, slot_offset(slot)))
+    }
+
+    pub fn output_name(&self, slot: usize) -> Option<String> {
+        if slot >= self.map.u64_at(8).load(Ordering::Acquire) as usize {
+            return None;
+        }
+        Some(read_name(&self.map, output_offset(slot)))
+    }
+
+    /// `(output, messages, bytes)` sent so far.
+    pub fn outputs(&self) -> Vec<(String, u64, u64)> {
+        let count = (self.map.u64_at(8).load(Ordering::Acquire) as usize).min(MAX_OUTPUTS);
+        (0..count)
+            .map(|slot| {
+                let base = output_offset(slot);
+                let (messages, bytes) = (self.map.u64_at(base + 64), self.map.u64_at(base + 72));
+                (read_name(&self.map, base), messages.load(Ordering::Relaxed), bytes.load(Ordering::Relaxed))
+            })
+            .collect()
     }
 
     pub fn inputs(&self) -> Vec<InputHistograms> {
@@ -258,7 +318,8 @@ pub struct RawEvent {
     pub trace: u64,
     pub parent: u64,
     pub t_ns: u64,
-    /// For `TAKEN` and `RELEASED`: the input's slot in the stats file.
+    /// The input's slot in the stats file for `TAKEN` and `RELEASED`, the
+    /// output's for `PUBLISHED`.
     pub aux: u64,
 }
 
@@ -367,6 +428,10 @@ mod tests {
         assert_eq!(read[0].input, "frames");
         assert_eq!((read[0].latency.count, read[0].latency.max), (1, 20_000));
         assert_eq!(read[0].processing.max, 3_000);
+        let out = stats.output_slot("brightness").unwrap();
+        stats.record_output(out, 16);
+        stats.record_output(out, 16);
+        assert_eq!(StatsReader::open(&dir, "n").unwrap().outputs(), [("brightness".into(), 2, 32)]);
 
         let writer = EventWriter::create(&dir, "n").unwrap();
         let reader = EventReader::open(&dir, "n").unwrap();

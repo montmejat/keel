@@ -1,6 +1,10 @@
 //! Wire protocols: daemon <-> nodes over a Unix socket, and daemon <-> daemon
 //! over TCP.
 //!
+//! Local messages don't use the node socket (see [`crate::channel`]): a node
+//! registers on it, gets its routes back, and keeps it open so that the
+//! daemon notices when it exits.
+//!
 //! Every frame is `[u32 LE length][u8 tag][fields]`; each field is
 //! `[u32 LE length][bytes]`. Hand-rolled and dependency-free on purpose.
 
@@ -13,42 +17,35 @@ pub const ENV_NODE_ID: &str = "KEEL_NODE_ID";
 pub const ENV_DAEMON_SOCKET: &str = "KEEL_DAEMON_SOCKET";
 /// Directory holding the shared-memory regions, see [`crate::shm`].
 pub const ENV_SHM_DIR: &str = "KEEL_SHM_DIR";
+/// Set for nodes the dataflow marks real-time.
+pub const ENV_REALTIME: &str = "KEEL_REALTIME";
 
 const MAX_FRAME_LEN: u32 = 64 * 1024 * 1024;
 
 /// Node -> daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeMsg {
-    Register {
-        node_id: String,
-    },
-    /// The payload is in region `<this node>.<slot>`.
-    Output {
-        output_id: String,
-        slot: u32,
-        len: u64,
-    },
+    Register { node_id: String },
 }
 
 /// Daemon -> node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonMsg {
-    /// All nodes have registered, so no output can be lost.
-    Ready,
-    /// The payload is in region `<source>.<slot>`, and the receiver holds a
-    /// reference to it.
-    Input { input_id: String, source: String, slot: u32, len: u64 },
-    /// All upstream nodes have exited.
-    Stop,
+    /// All nodes have registered, so no output can be lost. `routes` says
+    /// where this node's messages come from and go, one per line:
+    ///
+    /// ```text
+    /// in <input> <source node>          read channel <this node>.in.<input>
+    /// out <output> <node> <input>       push to <node>.in.<input>
+    /// out <output> @daemon              push to the daemon, for other machines
+    /// ```
+    Ready { routes: String },
 }
 
 impl NodeMsg {
     pub fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         match self {
             NodeMsg::Register { node_id } => write_frame(w, 1, &[node_id.as_bytes()]),
-            NodeMsg::Output { output_id, slot, len } => {
-                write_frame(w, 2, &[output_id.as_bytes(), &slot.to_le_bytes(), &len.to_le_bytes()])
-            }
         }
     }
 
@@ -59,7 +56,6 @@ impl NodeMsg {
         };
         let msg = match tag {
             1 => NodeMsg::Register { node_id: f.string()? },
-            2 => NodeMsg::Output { output_id: f.string()?, slot: f.u32()?, len: f.u64()? },
             t => return Err(invalid(format!("unknown node message tag {t}"))),
         };
         Ok(Some(msg))
@@ -69,11 +65,7 @@ impl NodeMsg {
 impl DaemonMsg {
     pub fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         match self {
-            DaemonMsg::Ready => write_frame(w, 101, &[]),
-            DaemonMsg::Input { input_id, source, slot, len } => {
-                write_frame(w, 102, &[input_id.as_bytes(), source.as_bytes(), &slot.to_le_bytes(), &len.to_le_bytes()])
-            }
-            DaemonMsg::Stop => write_frame(w, 103, &[]),
+            DaemonMsg::Ready { routes } => write_frame(w, 101, &[routes.as_bytes()]),
         }
     }
 
@@ -83,9 +75,7 @@ impl DaemonMsg {
             return Ok(None);
         };
         let msg = match tag {
-            101 => DaemonMsg::Ready,
-            102 => DaemonMsg::Input { input_id: f.string()?, source: f.string()?, slot: f.u32()?, len: f.u64()? },
-            103 => DaemonMsg::Stop,
+            101 => DaemonMsg::Ready { routes: f.string()? },
             t => return Err(invalid(format!("unknown daemon message tag {t}"))),
         };
         Ok(Some(msg))
@@ -182,26 +172,32 @@ fn read_frame(r: &mut impl Read) -> io::Result<Option<(u8, Fields)>> {
     if len == 0 || len > MAX_FRAME_LEN {
         return Err(invalid(format!("invalid frame length {len}")));
     }
-    let mut body = vec![0u8; len as usize];
+    let mut tag = [0u8];
+    r.read_exact(&mut tag)?;
+    let mut body = vec![0u8; len as usize - 1];
     r.read_exact(&mut body)?;
-    let tag = body.remove(0);
-    Ok(Some((tag, Fields(body))))
+    Ok(Some((tag[0], Fields { buf: body, pos: 0 })))
 }
 
-struct Fields(Vec<u8>);
+/// Reads fields in order. Each is copied out once: a payload of megabytes
+/// shouldn't be moved around for every small field in front of it.
+struct Fields {
+    buf: Vec<u8>,
+    pos: usize,
+}
 
 impl Fields {
     fn bytes(&mut self) -> io::Result<Vec<u8>> {
-        let len = match self.0.get(..4) {
+        let len = match self.buf.get(self.pos..self.pos + 4) {
             Some(b) => u32::from_le_bytes(b.try_into().unwrap()) as usize,
             None => return Err(invalid("truncated frame")),
         };
-        if self.0.len() < 4 + len {
+        let start = self.pos + 4;
+        if self.buf.len() - start < len {
             return Err(invalid("truncated frame"));
         }
-        let rest = self.0.split_off(4 + len);
-        let field = std::mem::replace(&mut self.0, rest).split_off(4);
-        Ok(field)
+        self.pos = start + len;
+        Ok(self.buf[start..start + len].to_vec())
     }
 
     fn u32(&mut self) -> io::Result<u32> {
@@ -229,15 +225,8 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let node = [
-            NodeMsg::Register { node_id: "talker".into() },
-            NodeMsg::Output { output_id: "count".into(), slot: 3, len: 1 << 40 },
-        ];
-        let daemon = [
-            DaemonMsg::Ready,
-            DaemonMsg::Input { input_id: "count".into(), source: "talker".into(), slot: 0, len: 0 },
-            DaemonMsg::Stop,
-        ];
+        let node = [NodeMsg::Register { node_id: "talker".into() }];
+        let daemon = [DaemonMsg::Ready { routes: "in ack listener\nout count listener count\n".into() }];
         let mut wire = Vec::new();
         node.iter().for_each(|m| m.write_to(&mut wire).unwrap());
         let mut r = wire.as_slice();

@@ -195,6 +195,13 @@ impl Mapping {
         self.len == 0
     }
 
+    /// The `AtomicU32` at byte `offset`, which must be 4-byte aligned.
+    pub fn u32_at(&self, offset: usize) -> &AtomicU32 {
+        assert!(offset.is_multiple_of(4) && offset + 4 <= self.len);
+        // SAFETY: aligned and in bounds, checked above.
+        unsafe { &*self.ptr.as_ptr().add(offset).cast::<AtomicU32>() }
+    }
+
     /// The `AtomicU64` at byte `offset`, which must be 8-byte aligned.
     pub fn u64_at(&self, offset: usize) -> &AtomicU64 {
         assert!(offset.is_multiple_of(8) && offset + 8 <= self.len);

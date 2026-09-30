@@ -118,7 +118,7 @@ fn print_span(span: &SpanRecord, children: &HashMap<u64, Vec<&SpanRecord>>, dept
         let latency = span.published.zip(d.taken).map_or("?".into(), |(p, t)| nanos(t.saturating_sub(p)));
         let processing = d.taken.zip(d.released).map_or("?".into(), |(t, r)| nanos(r.saturating_sub(t)));
         println!(
-            "{indent}→ {}  {}  {}  then processing {processing}",
+            "{indent}→ {}  {}{}  then processing {processing}",
             at(&format!("{}/{}", d.node, d.input), &d.machine, multi),
             latency,
             hops(span, d),
@@ -146,7 +146,10 @@ fn hops(span: &SpanRecord, d: &keel_daemon::control::Delivery) -> String {
     let steps: Vec<String> = (steps.iter())
         .filter_map(|&(name, from, to)| Some(format!("{name} {}", nanos(to?.saturating_sub(from?)))))
         .collect();
-    format!("[{}]", steps.join(", "))
+    if steps.is_empty() {
+        return String::new();
+    }
+    format!(" [{}]", steps.join(", "))
 }
 
 /// Chrome trace JSON: a process per machine, a track per node with its

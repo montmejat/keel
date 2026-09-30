@@ -634,7 +634,6 @@ name = "jitter"
 version = "0.1.0"
 dependencies = [
  "keel",
- "libc",
 ]
 
 [[package]]

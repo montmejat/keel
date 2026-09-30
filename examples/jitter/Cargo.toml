@@ -7,4 +7,3 @@ publish = false
 
 [dependencies]
 keel = { path = "../../crates/keel" }
-libc = "0.2"

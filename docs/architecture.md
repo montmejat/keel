@@ -68,6 +68,10 @@ keel leans on the kernel and on Linux conventions instead of reinventing them:
 | Nodes die with the daemon | `prctl(PR_SET_PDEATHSIG)` |
 | Stop, then insist | `Stop` message → SIGTERM → SIGKILL |
 | Logs | stdout/stderr pipes, prefixed lines |
+| Descriptors between nodes | Lock-free rings in `/dev/shm` files |
+| Waking a receiver | `futex` on a word in shared memory (not `FUTEX_PRIVATE`) |
+| Real-time nodes | `SCHED_FIFO`, `sched_setaffinity`, `mlockall`, `PR_SET_TIMERSLACK` |
+| Periodic loops | `clock_nanosleep(TIMER_ABSTIME)` |
 | Timestamps | `clock_gettime(CLOCK_MONOTONIC)`, a vDSO call (~20 ns) |
 | Trace data out of the nodes | Lock-free rings and counters in `/dev/shm` files |
 | Aligning machines' clocks | NTP's four-timestamp exchange, over the coordinator's own connection |
@@ -93,7 +97,7 @@ overlaps with systemd.
    itself, `keel trace`, a Perfetto export, and a jitter benchmark
    ([0014](decisions/0014-tracing-and-clocks.md)). This comes first because it is
    what the next milestones get measured with.
-6. **Real-time data plane**: the daemon off the data path (descriptor rings
+6. **Real-time data plane** (done): the daemon off the data path (descriptor rings
    in shared memory, futex wake-ups), no allocation per message, SCHED_FIFO
    and CPU pinning from the dataflow, per-input policies (block, or keep the
    latest), a periodic-loop helper. Tried on a PREEMPT_RT kernel on the Pi.
@@ -154,6 +158,27 @@ host (`examples/bench-two-machines.yml`), so every message crosses TCP.
 
 Unlike the shared-memory numbers, these include real copies of the payload.
 
+**Milestone 6**: descriptors go node to node through shared-memory rings,
+woken by futexes; the daemon is off the local path
+([0015](decisions/0015-realtime-data-plane.md)).
+
+```
+    size    rtt p50    rtt p99   throughput      msg/s
+     64B      5.6µs     10.8µs       344 MB/s    5368900
+    4KiB      6.6µs     10.3µs     22264 MB/s    5435516
+   64KiB      5.5µs      9.2µs    294128 MB/s    4488039
+    1MiB      5.6µs      8.0µs   1285921 MB/s    1226350
+    8MiB      5.5µs      7.4µs   1845437 MB/s     219993
+```
+
+Round trips are 3.5× faster and small-message throughput is 20× higher. On
+the Pi 3: 25 µs round trip, 750k msg/s.
+
+Across two daemons on one host, M6 also fixed a copy-per-field in the wire
+format's parser that M5 had made worse (five trace fields in front of the
+payload): 64 B 40 µs, 1 MiB 390 µs, 8 MiB 3.9 ms round trip (M4: 58 µs,
+476 µs, 5.6 ms).
+
 With shared memory, latency is flat at ~20 µs whatever the size: an 8 MiB frame went from
 29 ms to 22 µs round trip. The MB/s column is size × msg/s. Nothing reads or
 writes the payload, so it isn't memory bandwidth; `msg/s` is the meaningful
@@ -184,6 +209,27 @@ default 50 µs timer slack lets wake-ups run late on purpose. Loaded, the
 median improves since no CPU sleeps, but the tail reaches milliseconds and one
 deadline in nine is missed. A control loop cares about the max, not the
 median.
+
+**After milestone 6** (same benchmark; the Pi gained an rtprio limit, the
+laptop didn't, so its "rt" runs only get pinning, 1 ns timer slack and
+locked memory):
+
+```
+                        wake-up late                   round trip             missed
+                    p50     p99   p99.9    max     p50     p99   p99.9    max
+laptop  idle     91.2µs   157µs   488µs  2.9ms   115µs   169µs   246µs  2.2ms      0.1%
+laptop  loaded   23.3µs  49.4µs   1.9ms  4.6ms  17.9µs  22.9µs   2.7ms  4.1ms      1.3%
+laptop  rt load   5.8µs  97.1µs   633µs  1.8ms  16.5µs   625µs   2.6ms  3.5ms      0.8%
+Pi 3    idle     61.4µs  75.5µs   200µs  1.4ms  29.6µs  88.1µs   235µs  2.2ms      0.1%
+Pi 3    loaded   62.3µs  69.5µs   3.1ms  5.1ms  35.5µs  80.5µs   5.0ms  6.0ms      2.5%
+Pi 3    rt idle  12.9µs  20.7µs  41.7µs 60.6µs  39.5µs  59.2µs  74.1µs  325µs      0.0%
+Pi 3    rt load   9.6µs  12.2µs  19.9µs 85.8µs  25.4µs  32.0µs  53.0µs  331µs      0.0%
+```
+
+Taking the daemon off the path cut missed deadlines under load from 11–13%
+to 1–2.5%. SCHED_FIFO on the Pi (`examples/jitter-rt.yml`) removes them:
+with every core busy, the worst wake-up is 86 µs late and the worst round
+trip 331 µs, on the stock (not PREEMPT_RT) kernel.
 
 ### Tracing
 
