@@ -19,6 +19,10 @@ pub const ENV_DAEMON_SOCKET: &str = "KEEL_DAEMON_SOCKET";
 pub const ENV_SHM_DIR: &str = "KEEL_SHM_DIR";
 /// Set for nodes the dataflow marks real-time.
 pub const ENV_REALTIME: &str = "KEEL_REALTIME";
+/// The dataflow's name (its file's stem), for nodes that name things after it.
+pub const ENV_DATAFLOW: &str = "KEEL_DATAFLOW";
+/// The id of the deployment the node was started from, when there is one.
+pub const ENV_DEPLOYMENT: &str = "KEEL_DEPLOYMENT";
 
 const MAX_FRAME_LEN: u32 = 64 * 1024 * 1024;
 
@@ -35,7 +39,7 @@ pub enum DaemonMsg {
     /// where this node's messages come from and go, one per line:
     ///
     /// ```text
-    /// in <input> <source node>          read channel <this node>.in.<input>
+    /// in <input> <source node> <output> read channel <this node>.in.<input>
     /// out <output> <node> <input>       push to <node>.in.<input>
     /// out <output> @daemon              push to the daemon, for other machines
     /// ```

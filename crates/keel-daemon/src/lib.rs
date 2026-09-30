@@ -48,13 +48,23 @@ pub fn run(path: &Path) -> io::Result<bool> {
     }
     let name = std::fs::canonicalize(path)?;
     let base_dir = name.parent().unwrap().to_owned();
-    run_dataflow(name, dataflow, base_dir, BTreeMap::new())
+    run_dataflow(name, dataflow, base_dir, BTreeMap::new(), None)
 }
 
 /// Runs a deployment: built nodes run their binary from the store.
 pub fn start(deployment: &Deployment) -> io::Result<bool> {
     let (name, dataflow) = (deployment.source.clone(), deployment.dataflow.clone());
-    run_dataflow(name, dataflow, deployment.base_dir.clone(), deployment.binaries.clone())
+    let id = Some(deployment.id.clone());
+    run_dataflow(name, dataflow, deployment.base_dir.clone(), deployment.binaries.clone(), id)
+}
+
+/// Runs a dataflow on this machine only, with `build:` nodes built for this
+/// machine and not recorded as a deployment: what `keel replay` runs.
+pub fn run_here(name: PathBuf, mut dataflow: Dataflow, base_dir: PathBuf) -> io::Result<bool> {
+    dataflow.machines.clear();
+    dataflow.nodes.iter_mut().for_each(|n| n.machine = None);
+    let executables = packaging::build_here(&dataflow, &base_dir)?;
+    run_local(name, dataflow, base_dir, executables, None)
 }
 
 fn run_dataflow(
@@ -62,14 +72,15 @@ fn run_dataflow(
     dataflow: Dataflow,
     base_dir: PathBuf,
     binaries: BTreeMap<String, String>,
+    deployment: Option<String>,
 ) -> io::Result<bool> {
     if dataflow.machines.is_empty() {
         let store = Store::open()?;
         let executables =
             (binaries.iter()).map(|(node, hash)| Ok((node.clone(), store.blob(hash)?))).collect::<io::Result<_>>()?;
-        run_local(name, dataflow, base_dir, executables)
+        run_local(name, dataflow, base_dir, executables, deployment)
     } else {
-        coordinator::run(name, dataflow, base_dir, binaries)
+        coordinator::run(name, dataflow, base_dir, binaries, deployment)
     }
 }
 
@@ -79,13 +90,14 @@ fn run_local(
     dataflow: Dataflow,
     base_dir: PathBuf,
     executables: BTreeMap<String, PathBuf>,
+    deployment: Option<String>,
 ) -> io::Result<bool> {
     let runtime = RuntimeDir::create()?;
     let control_listener = UnixListener::bind(runtime.control_socket())?;
     signals::install();
 
     let (events_tx, events) = mpsc::channel();
-    let config = SessionConfig { name, machine: None, dataflow, base_dir, executables };
+    let config = SessionConfig { name, machine: None, dataflow, base_dir, executables, deployment };
     let session = Session::launch(config, SessionFiles::create(&runtime.dir)?, events_tx)?;
     {
         let session = session.clone();

@@ -62,6 +62,7 @@ pub(crate) fn run(
     dataflow: Dataflow,
     base_dir: PathBuf,
     binaries: BTreeMap<String, String>,
+    deployment: Option<String>,
 ) -> io::Result<bool> {
     let runtime = RuntimeDir::create()?;
     let control_listener = UnixListener::bind(runtime.control_socket())?;
@@ -94,6 +95,7 @@ pub(crate) fn run(
                 .filter(|(node, _)| on_machine(node))
                 .map(|(n, h)| (n.clone(), h.clone()))
                 .collect(),
+            deployment: deployment.clone(),
         };
         let stream = connect(address).and_then(|mut stream| {
             stream.write_all(&[wire::COORDINATOR])?;

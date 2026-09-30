@@ -1,0 +1,22 @@
+# The camera pipeline with a recorder. Frames are 6 MB at 30 Hz: about
+# 180 MB/s to disk, to ~/.local/share/keel/recordings/ unless given a path.
+# `keep: latest` means a slow disk skips frames instead of slowing the camera.
+#
+#   keel run examples/pipeline-recorded.yml            # Ctrl-C to stop
+#   keel recording <file>                              # what's in it
+#   keel replay <file> examples/pipeline.yml           # the camera, replayed
+#   keel export <file> dataset/ --channel brightness   # files + index.csv
+nodes:
+  - id: camera
+    build: camera
+
+  - id: detector
+    build: detector
+    inputs:
+      frames: camera/frames
+
+  - id: recorder
+    build: keel-recorder
+    inputs:
+      frames: { source: camera/frames, keep: latest }
+      brightness: detector/brightness

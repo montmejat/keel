@@ -13,5 +13,6 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 keel = { path = "../keel" }
 keel-daemon = { path = "../keel-daemon" }
+keel-record = { path = "../keel-record" }
 ratatui = "0.30"
 serde_json = "1"

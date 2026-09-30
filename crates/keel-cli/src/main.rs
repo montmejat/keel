@@ -3,6 +3,7 @@
 //! Every command except `run` is a client of a daemon's control API.
 
 mod fmt;
+mod recording;
 mod top;
 mod trace;
 
@@ -73,6 +74,37 @@ enum Command {
         #[arg(long)]
         pid: Option<u32>,
     },
+    /// What's in a recording
+    Recording { file: PathBuf },
+    /// Run a dataflow on this machine with its recorded source nodes
+    /// replaced by the recording
+    Replay {
+        recording: PathBuf,
+        dataflow: PathBuf,
+        /// Playback speed; 0 for as fast as possible
+        #[arg(long, default_value_t = 1.0)]
+        speed: f64,
+    },
+    /// Write a recording's messages out as files, with an index
+    Export {
+        recording: PathBuf,
+        dir: PathBuf,
+        /// Only this channel (an input name or `node/output`); repeatable
+        #[arg(long = "channel")]
+        channels: Vec<String>,
+        /// Seconds from the start of the recording
+        #[arg(long, default_value_t = 0.0)]
+        from: f64,
+        #[arg(long, default_value_t = f64::INFINITY)]
+        to: f64,
+    },
+    /// The node `keel replay` puts in place of a recorded one
+    #[command(hide = true)]
+    ReplayNode {
+        recording: PathBuf,
+        #[arg(long, default_value_t = 1.0)]
+        speed: f64,
+    },
     /// Latency of every input, and the latest sampled traces
     Trace {
         /// How many traces to show
@@ -115,6 +147,15 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             println!("`{name}` is now {} ({}); `keel start {name}` runs it", d.id, fmt::age(d.created));
         }
         Command::Gc { keep } => packaging::gc(keep)?,
+        Command::Recording { file } => recording::info(&file)?,
+        Command::Replay { recording, dataflow, speed } => {
+            let ok = recording::replay(&recording, &dataflow, speed)?;
+            return Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE });
+        }
+        Command::Export { recording, dir, channels, from, to } => {
+            recording::export(&recording, &dir, &channels, from, to)?
+        }
+        Command::ReplayNode { recording, speed } => recording::replay_node(&recording, speed)?,
         Command::Daemon { listen } => keel_daemon::serve(&listen)?,
         Command::Ps => ps()?,
         Command::Top { pid } => top::run(pick(pid)?)?,
@@ -181,13 +222,13 @@ fn history(name: Option<&str>) -> Result<(), Box<dyn Error>> {
         Some(name) => vec![name.to_owned()],
         None => registry.names(),
     };
-    println!("  {:<16} {:<13} {:>9}  {:>5}  {:<24} RUSTC", "NAME", "ID", "DEPLOYED", "BUILT", "MACHINES");
+    println!("  {:<22} {:<13} {:>10}  {:>5}  {:<16} RUSTC", "NAME", "ID", "DEPLOYED", "BUILT", "MACHINES");
     for name in names {
         let current = registry.current(&name).ok().map(|d| d.id);
         for d in registry.history(&name)? {
             let machines: Vec<&str> = d.dataflow.machines.keys().map(String::as_str).collect();
             println!(
-                "{} {:<16} {:<13} {:>9}  {:>5}  {:<24} {}",
+                "{} {:<22} {:<13} {:>10}  {:>5}  {:<16} {}",
                 if current.as_ref() == Some(&d.id) { "*" } else { " " },
                 d.name,
                 d.id,

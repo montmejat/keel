@@ -36,6 +36,9 @@ pub struct NodeConfig {
     /// `input_id: source_node/output_id`, or `input_id: { source: ..., keep: latest }`
     #[serde(default)]
     pub inputs: BTreeMap<String, Input>,
+    /// Command-line arguments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
     /// Real-time scheduling for this node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rt: Option<Realtime>,

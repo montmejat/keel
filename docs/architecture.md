@@ -107,7 +107,7 @@ overlaps with systemd.
 7. **Packaging and deployment** (done): reproducible static builds, a store keyed
    by hash on each daemon, `keel deploy | rollback | history | gc`. Replaces
    copying binaries to the same path on every machine.
-8. **Recording and replay**: a recorder node, a file format that names the
+8. **Recording and replay** (done): a recorder node, a file format that names the
    deployment that produced it, `keel replay`, `keel export` to datasets.
 9. **Cluster TUI**: `keel top` through the coordinator: the whole graph
    across machines, latency per link, traces, deployed version, recordings.

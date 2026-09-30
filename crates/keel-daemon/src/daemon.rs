@@ -153,8 +153,9 @@ impl Daemon {
         let mut session: Option<Arc<Session>> = None;
         while let Ok(Some(request)) = wire::read_json(&mut reader) {
             let request = match request {
-                ToDaemon::Spawn { name, machine, dataflow, base_dir, binaries } => {
-                    match self.spawn(name, machine, dataflow, base_dir, binaries, writer.clone()) {
+                ToDaemon::Spawn { name, machine, dataflow, base_dir, binaries, deployment } => {
+                    let spawned = self.spawn(name, machine, dataflow, base_dir, (binaries, deployment), writer.clone());
+                    match spawned {
                         Ok(spawned) => session = Some(spawned),
                         Err(e) => send(&Event::Error { message: e.to_string() })?,
                     }
@@ -229,7 +230,7 @@ impl Daemon {
         machine: String,
         dataflow: crate::dataflow::Dataflow,
         base_dir: PathBuf,
-        binaries: BTreeMap<String, String>,
+        (binaries, deployment): (BTreeMap<String, String>, Option<String>),
         writer: Arc<Mutex<TcpStream>>,
     ) -> io::Result<Arc<Session>> {
         let mut executables = BTreeMap::new();
@@ -246,8 +247,8 @@ impl Daemon {
             if current.is_some() {
                 return Err(io::Error::other("this daemon is already running a dataflow"));
             }
-            let config =
-                SessionConfig { name: name.clone(), machine: Some(machine.clone()), dataflow, base_dir, executables };
+            let machine = Some(machine.clone());
+            let config = SessionConfig { name: name.clone(), machine, dataflow, base_dir, executables, deployment };
             let files = SessionFiles::create(&self.runtime_dir)?;
             current.insert(Session::launch(config, files, events_tx)?).clone()
         };

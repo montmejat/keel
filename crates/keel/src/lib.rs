@@ -104,6 +104,8 @@ impl Tracer {
 struct Input {
     id: &'static str,
     source: String,
+    /// `source node/output`
+    from: String,
     channel: Channel,
     /// The sender's regions this node has mapped, by slot.
     regions: Vec<Option<Arc<Region>>>,
@@ -168,13 +170,14 @@ impl Node {
         };
         for line in routes.lines() {
             match line.split_whitespace().collect::<Vec<_>>()[..] {
-                ["in", input, source] => {
+                ["in", input, source, output] => {
                     tracer.stats.slot(input);
                     inputs.push(Input {
                         // Input names live as long as the node; leaking them
                         // once spares an allocation per message.
                         id: Box::leak(input.to_owned().into_boxed_str()),
                         source: source.to_owned(),
+                        from: format!("{source}/{output}"),
                         channel: Channel::open(&channel::channel_path(&shm_dir, &id, input))?,
                         regions: Vec::new(),
                     });
@@ -227,6 +230,17 @@ impl Node {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// Each input, with the `node/output` feeding it.
+    pub fn inputs(&self) -> Vec<(&'static str, &str)> {
+        self.inputs.iter().map(|i| (i.id, i.from.as_str())).collect()
+    }
+
+    /// The dataflow's name, and the deployment it runs from, if any.
+    pub fn dataflow(&self) -> (String, Option<String>) {
+        let get = |name| std::env::var(name).ok().filter(|v: &String| !v.is_empty());
+        (get(protocol::ENV_DATAFLOW).unwrap_or_default(), get(protocol::ENV_DEPLOYMENT))
     }
 
     /// Sends `data` on an output. Copies it once, into shared memory; use

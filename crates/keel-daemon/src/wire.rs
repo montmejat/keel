@@ -43,6 +43,8 @@ pub enum ToDaemon {
         base_dir: PathBuf,
         #[serde(default)]
         binaries: BTreeMap<String, String>,
+        #[serde(default)]
+        deployment: Option<String>,
     },
     /// What platform are you, what do you hold? Answered with `Hello`.
     Hello,

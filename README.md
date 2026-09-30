@@ -16,6 +16,7 @@ over TCP between machines. Every message is traced. Linux only.
 crates/keel          node API
 crates/keel-daemon   runs dataflows: sessions, coordinator, daemon, control API
 crates/keel-cli      the `keel` command, including the `keel top` TUI
+crates/keel-record   recordings: the file format and the recorder node
 examples/            talker/listener, a camera pipeline, benchmarks, each also
                      across two machines; containers/ runs them in Podman
 ```
@@ -66,6 +67,20 @@ keel gc --keep 3                                 # forget older ones, delete unu
 
 Cross-building needs the target: `rustup target add aarch64-unknown-linux-musl`
 (and `x86_64-unknown-linux-musl`).
+
+### Recording and replay
+
+`keel-recorder` is a node that records its inputs to a file naming the
+dataflow and deployment that produced them. `keel replay` runs a dataflow
+with its recorded sources replaced by the recording, so the rest can't tell;
+`keel export` turns a recording into files plus an index:
+
+```sh
+keel run examples/pipeline-recorded.yml                 # Ctrl-C to stop
+keel recording ~/.local/share/keel/recordings/<file>    # channels, sizes
+keel replay <file> examples/pipeline.yml --speed 2      # the camera, replayed
+keel export <file> dataset/ --channel brightness --from 10 --to 20
+```
 
 Or with each machine in its own container (Podman):
 `examples/containers/run.sh`. Daemons have no authentication: anyone who

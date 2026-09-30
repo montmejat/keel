@@ -672,6 +672,7 @@ dependencies = [
  "clap",
  "keel",
  "keel-daemon",
+ "keel-record",
  "ratatui",
  "serde_json",
 ]
@@ -685,6 +686,15 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+]
+
+[[package]]
+name = "keel-record"
+version = "0.1.0"
+dependencies = [
+ "keel",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

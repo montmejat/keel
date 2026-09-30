@@ -31,7 +31,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use keel::channel::{self, Bell, Channel, Target, DAEMON};
-use keel::protocol::{DaemonMsg, NodeMsg, PeerMsg, ENV_DAEMON_SOCKET, ENV_NODE_ID, ENV_REALTIME, ENV_SHM_DIR};
+use keel::protocol::{
+    DaemonMsg, NodeMsg, PeerMsg, ENV_DAEMON_SOCKET, ENV_DATAFLOW, ENV_DEPLOYMENT, ENV_NODE_ID, ENV_REALTIME,
+    ENV_SHM_DIR,
+};
 use keel::shm::{self, Pool, Region};
 use keel::trace::{self, ENV_NODE_INDEX};
 
@@ -67,6 +70,8 @@ pub(crate) struct SessionConfig {
     pub base_dir: PathBuf,
     /// What `build:` nodes run: their binary in the store.
     pub executables: BTreeMap<String, PathBuf>,
+    /// The deployment this runs, if any: nodes are told.
+    pub deployment: Option<String>,
 }
 
 pub(crate) struct Session {
@@ -78,6 +83,8 @@ pub(crate) struct Session {
     node_index: HashMap<String, u16>,
     /// What each local node is told at start: its channels and targets.
     node_routes: HashMap<String, String>,
+    dataflow_name: String,
+    deployment: Option<String>,
     tracing: Tracing,
     machine: Option<String>,
     /// Node -> machine; empty when everything is local.
@@ -190,8 +197,8 @@ impl Session {
         for node in &local_nodes {
             let routes = node_routes.entry(node.id.clone()).or_default();
             for (input, source) in &node.inputs {
-                let source_node = source.source().split('/').next().unwrap();
-                routes.push_str(&format!("in {input} {source_node}\n"));
+                let (source_node, output) = source.source().split_once('/').unwrap();
+                routes.push_str(&format!("in {input} {source_node} {output}\n"));
             }
         }
         let mut forwards = Vec::new();
@@ -246,7 +253,7 @@ impl Session {
         let node_listener = UnixListener::bind(&files.nodes_socket)?;
         let session = Arc::new(Session {
             state: Mutex::new(State {
-                name: config.name,
+                name: config.name.clone(),
                 start: Instant::now(),
                 expected: local_nodes.iter().map(|n| n.id.clone()).collect(),
                 sockets: HashMap::new(),
@@ -271,6 +278,8 @@ impl Session {
             cyclic: graph.cyclic,
             node_index,
             node_routes,
+            dataflow_name: config.name.file_stem().map_or(String::new(), |s| s.to_string_lossy().into_owned()),
+            deployment: config.deployment.clone(),
             tracing,
             machine: config.machine,
             machine_of,
@@ -511,6 +520,10 @@ impl Session {
                 .process_group(0);
             if node.rt.is_some() {
                 command.env(ENV_REALTIME, "1");
+            }
+            command.args(&node.args).env(ENV_DATAFLOW, &self.dataflow_name);
+            if let Some(deployment) = &self.deployment {
+                command.env(ENV_DEPLOYMENT, deployment);
             }
             // SAFETY: prctl is async-signal-safe.
             unsafe {

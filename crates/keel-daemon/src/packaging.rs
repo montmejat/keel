@@ -149,6 +149,21 @@ pub fn deploy(path: &Path) -> io::Result<Deployment> {
     Ok(deployment)
 }
 
+/// Builds a dataflow's `build:` nodes for this machine, without shipping or
+/// recording anything. Returns each built node's binary.
+pub fn build_here(dataflow: &Dataflow, base_dir: &Path) -> io::Result<BTreeMap<String, PathBuf>> {
+    let nodes: Vec<(&String, &String)> =
+        dataflow.nodes.iter().filter_map(|n| Some((&n.id, n.build.as_ref()?))).collect();
+    if nodes.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut bins: Vec<&str> = nodes.iter().map(|(_, bin)| bin.as_str()).collect();
+    bins.sort();
+    bins.dedup();
+    let dir = build(&workspace_root(base_dir)?, &host_target(), &bins)?;
+    Ok(nodes.into_iter().map(|(id, bin)| (id.clone(), dir.join(bin))).collect())
+}
+
 /// Cargo's workspace root for the dataflow's directory.
 fn workspace_root(dir: &Path) -> io::Result<PathBuf> {
     let out = Command::new("cargo")
