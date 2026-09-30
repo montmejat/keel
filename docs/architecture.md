@@ -109,7 +109,7 @@ overlaps with systemd.
    copying binaries to the same path on every machine.
 8. **Recording and replay** (done): a recorder node, a file format that names the
    deployment that produced it, `keel replay`, `keel export` to datasets.
-9. **Cluster TUI**: `keel top` through the coordinator: the whole graph
+9. **Cluster TUI** (done): `keel top` through the coordinator: the whole graph
    across machines, latency per link, traces, deployed version, recordings.
 10. **Provisioning**: SSH bootstrap of a fresh machine.
 11. **Lifecycle polish**: restart policies, health checks, rolling updates.

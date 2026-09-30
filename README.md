@@ -31,7 +31,7 @@ cargo build
 In another terminal:
 
 ```sh
-./target/debug/keel top          # live view: ↑↓ select, f filter logs, s stop, q quit
+./target/debug/keel top          # live view: ↑↓ select, f filter logs, g graph, s stop, q quit
 ./target/debug/keel ps           # running dataflows
 ./target/debug/keel logs -f      # follow all logs; `keel logs camera` for one node
 ./target/debug/keel stop         # graceful stop (so is Ctrl-C in the first terminal)
@@ -48,6 +48,22 @@ machine's architecture and ships it (see below):
 ./target/debug/keel daemon --listen 127.0.0.1:7401 &    # "robot"
 ./target/debug/keel daemon --listen 127.0.0.1:7402 &    # "base"
 ./target/debug/keel run examples/pipeline-two-machines.yml
+```
+
+`keel top` then shows the whole dataflow, through the coordinator (`g` for
+the graph, links across machines in yellow):
+
+```
+ keel   ● running   cluster base, robot   deployment ecc2c7f0451c   up 8s
+╭ Nodes ──────────────────────────────────────────────────────────────────────
+│  NODE       PROGRAM  MACHINE STATE       IN/s    OUT/s           OUT
+│ ▌camera     camera   robot   ● running      0     30.8   182.9 MiB/s
+│  detector   detector base    ● running   30.8     29.8       477 B/s
+│  recorder   recorder robot   ● running   29.8        0         0 B/s
+╭ Graph ──────────────────────────────────────────────────────────────────────
+│              30.8/s 9.96ms                 29.8/s 278.5µs
+│ [camera] ⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤>[detector] ⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤>[recorder]
+│  @robot                        @base                         @robot
 ```
 
 ### Deployments

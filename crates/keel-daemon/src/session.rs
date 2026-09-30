@@ -85,6 +85,8 @@ pub(crate) struct Session {
     node_routes: HashMap<String, String>,
     dataflow_name: String,
     deployment: Option<String>,
+    /// What each local node runs, for display.
+    programs: HashMap<String, String>,
     tracing: Tracing,
     machine: Option<String>,
     /// Node -> machine; empty when everything is local.
@@ -280,6 +282,12 @@ impl Session {
             node_routes,
             dataflow_name: config.name.file_stem().map_or(String::new(), |s| s.to_string_lossy().into_owned()),
             deployment: config.deployment.clone(),
+            programs: (local_nodes.iter())
+                .map(|n| {
+                    let file = n.path.as_ref().and_then(|p| p.file_name()).map(|f| f.to_string_lossy().into_owned());
+                    (n.id.clone(), n.build.clone().or(file).unwrap_or_default())
+                })
+                .collect(),
             tracing,
             machine: config.machine,
             machine_of,
@@ -424,7 +432,7 @@ impl Session {
                 self.request_stop();
                 Reply::Stopping
             }
-            Request::Trace => Reply::Trace(self.tracing.report()),
+            Request::Trace { summary } => Reply::Trace(self.tracing.report(!summary)),
         }
     }
 
@@ -433,12 +441,13 @@ impl Session {
         let sent: HashMap<(String, String), (u64, u64)> =
             (self.tracing.outputs().into_iter()).map(|(node, output, n, bytes)| ((node, output), (n, bytes))).collect();
         let s = self.state.lock().unwrap();
-        let nodes = (s.nodes.iter())
+        let mut nodes: Vec<NodeStatus> = (s.nodes.iter())
             .map(|(id, info)| {
                 let regions = self.regions_of(id);
                 NodeStatus {
                     id: id.clone(),
                     machine: self.machine.clone(),
+                    program: self.programs.get(id).cloned().unwrap_or_default(),
                     pid: info.pid,
                     state: info.state.clone(),
                     shm_regions: regions.len() as u32,
@@ -447,6 +456,7 @@ impl Session {
                 }
             })
             .collect();
+        nodes.sort_by_key(|n| self.node_index.get(&n.id).copied());
         let endpoint = |node: &str, port: &str| match self.machine_of.get(node) {
             Some(machine) if Some(machine) != self.machine.as_ref() => format!("{node}/{port}@{machine}"),
             _ => format!("{node}/{port}"),
@@ -473,6 +483,7 @@ impl Session {
             nodes,
             links,
             coordinator: false,
+            deployment: self.deployment.clone(),
         }
     }
 

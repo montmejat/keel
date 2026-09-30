@@ -40,6 +40,9 @@ const LOG_CAPACITY: usize = 10_000;
 
 struct Coordinator {
     name: PathBuf,
+    deployment: Option<String>,
+    /// Each node's position in the dataflow, to list them in that order.
+    order: HashMap<String, usize>,
     start: Instant,
     daemons: Mutex<BTreeMap<String, TcpStream>>,
     /// Control requests waiting for daemons' answers, by id.
@@ -70,6 +73,8 @@ pub(crate) fn run(
 
     let coordinator = Arc::new(Coordinator {
         name: name.clone(),
+        deployment: deployment.clone(),
+        order: dataflow.nodes.iter().enumerate().map(|(i, n)| (n.id.clone(), i)).collect(),
         start: Instant::now(),
         daemons: Mutex::new(BTreeMap::new()),
         pending: Mutex::new(HashMap::new()),
@@ -286,7 +291,7 @@ impl Coordinator {
                 self.stop_requested.store(true, Ordering::Relaxed);
                 Reply::Stopping
             }
-            Request::Trace => Reply::Trace(self.trace()),
+            Request::Trace { summary } => Reply::Trace(self.trace(summary)),
         }
     }
 
@@ -300,23 +305,32 @@ impl Coordinator {
             nodes: Vec::new(),
             links: Vec::new(),
             coordinator: true,
+            deployment: self.deployment.clone(),
         };
+        // Node ids are unique across machines, and nodes carry their machine:
+        // endpoints don't need `@machine` here.
+        let plain = |endpoint: &str| endpoint.split('@').next().unwrap_or(endpoint).to_owned();
         for (_, reply) in self.ask_all(Request::Status) {
             if let Reply::Status(machine) = reply {
                 status.stopping |= machine.stopping;
                 status.nodes.extend(machine.nodes);
-                status.links.extend(machine.links);
+                status.links.extend(machine.links.into_iter().map(|mut link| {
+                    link.source = plain(&link.source);
+                    link.targets = link.targets.iter().map(|t| plain(t)).collect();
+                    link
+                }));
             }
         }
+        status.nodes.sort_by_key(|n| self.order.get(&n.id).copied());
         status
     }
 
     /// Every machine's report, merged onto our clock.
-    fn trace(&self) -> TraceReport {
+    fn trace(&self, summary: bool) -> TraceReport {
         let clocks = self.clocks();
         let mut merged = TraceReport { clocks: clocks.clone(), ..Default::default() };
         let mut spans: BTreeMap<u64, SpanRecord> = BTreeMap::new();
-        for (machine, reply) in self.ask_all(Request::Trace) {
+        for (machine, reply) in self.ask_all(Request::Trace { summary }) {
             let Reply::Trace(report) = reply else { continue };
             merged.inputs.extend(report.inputs);
             merged.dropped_events += report.dropped_events;

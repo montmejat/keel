@@ -169,7 +169,8 @@ impl Tracing {
         }
     }
 
-    pub fn report(&self) -> TraceReport {
+    /// Without `spans`, only the per-input latency.
+    pub fn report(&self, spans: bool) -> TraceReport {
         self.collect();
         let inner = self.inner.lock().unwrap();
         let mut inputs = Vec::new();
@@ -200,7 +201,10 @@ impl Tracing {
                 });
             }
         }
-        let spans = inner.order.iter().filter_map(|id| inner.spans.get(id)).cloned().collect();
+        let spans = match spans {
+            true => inner.order.iter().filter_map(|id| inner.spans.get(id)).cloned().collect(),
+            false => Vec::new(),
+        };
         TraceReport { inputs, spans, dropped_events, clocks: inner.clocks.clone() }
     }
 }

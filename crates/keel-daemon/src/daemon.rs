@@ -93,9 +93,10 @@ fn idle_reply(request: Request) -> Reply {
             nodes: Vec::new(),
             links: Vec::new(),
             coordinator: false,
+            deployment: None,
         }),
         Request::Logs { .. } => Reply::Logs(control::Logs { lines: Vec::new(), next: 0 }),
-        Request::Stop | Request::Trace => Reply::Error("no dataflow is running".into()),
+        Request::Stop | Request::Trace { .. } => Reply::Error("no dataflow is running".into()),
     }
 }
 

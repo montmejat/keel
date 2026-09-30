@@ -27,8 +27,12 @@ pub enum Request {
     },
     /// Stops the dataflow gracefully.
     Stop,
-    /// Latency per input, and the sampled traces still in memory.
-    Trace,
+    /// Latency per input, and the sampled traces still in memory, unless
+    /// `summary` asks for the latency only.
+    Trace {
+        #[serde(default)]
+        summary: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +60,9 @@ pub struct Status {
     /// A coordinator's view: every machine's nodes and links together.
     #[serde(default)]
     pub coordinator: bool,
+    /// The deployment running, if the dataflow was deployed.
+    #[serde(default)]
+    pub deployment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +71,9 @@ pub struct NodeStatus {
     /// Where it runs, for a multi-machine dataflow.
     #[serde(default)]
     pub machine: Option<String>,
+    /// What it runs: the `build:` binary, or the `path:` file's name.
+    #[serde(default)]
+    pub program: String,
     pub pid: Option<u32>,
     pub state: NodeState,
     /// Shared-memory regions this node sends from.
@@ -274,7 +284,16 @@ impl Client {
     }
 
     pub fn trace(&mut self) -> io::Result<TraceReport> {
-        match self.request(&Request::Trace)? {
+        self.trace_report(false)
+    }
+
+    /// Latency per input only, without the spans: cheap enough to poll.
+    pub fn latency(&mut self) -> io::Result<TraceReport> {
+        self.trace_report(true)
+    }
+
+    fn trace_report(&mut self, summary: bool) -> io::Result<TraceReport> {
+        match self.request(&Request::Trace { summary })? {
             Reply::Trace(report) => Ok(report),
             other => Err(unexpected(other)),
         }

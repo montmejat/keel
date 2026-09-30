@@ -1,23 +1,27 @@
 //! `keel top`: a live view of a running dataflow.
 //!
-//! Polls the daemon's control API and derives rates from counter deltas, so
-//! the daemon only ever keeps totals.
+//! Polls the control API and derives rates from counter deltas, so daemons
+//! only ever keep totals. Through the coordinator it shows every machine:
+//! where each node runs, links across machines, and latency per link.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io;
 use std::time::{Duration, Instant};
 
-use keel_daemon::control::{Client, LinkStatus, LogLine, NodeState, NodeStatus, Status};
+use keel_daemon::control::{Client, InputReport, LinkStatus, LogLine, NodeState, NodeStatus, Status};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
+use ratatui::widgets::canvas::{Canvas, Line as CanvasLine};
 use ratatui::widgets::{Block, BorderType, Padding, Paragraph, Row, Sparkline, Table, TableState};
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::fmt;
 
 const REFRESH: Duration = Duration::from_millis(250);
+/// Latency is heavier to gather (every daemon reads its nodes' histograms).
+const LATENCY_REFRESH: Duration = Duration::from_secs(1);
 /// Sparkline samples kept per node: 30 s at the refresh rate.
 const HISTORY: usize = 120;
 const LOG_LINES: usize = 1000;
@@ -67,6 +71,11 @@ struct App {
     filter_logs: bool,
     /// Set once the daemon is gone; the last status stays on screen.
     disconnected: bool,
+    /// Per `(node, input)`.
+    latency: HashMap<(String, String), InputReport>,
+    latency_polled: Option<Instant>,
+    /// Draw the dataflow as a graph instead of the links table.
+    graph: bool,
 }
 
 impl App {
@@ -82,6 +91,9 @@ impl App {
             table: TableState::default().with_selected(0),
             filter_logs: false,
             disconnected: false,
+            latency: HashMap::new(),
+            latency_polled: None,
+            graph: false,
         }
     }
 
@@ -101,6 +113,7 @@ impl App {
                         KeyCode::Down | KeyCode::Char('j') => self.select(1),
                         KeyCode::Up | KeyCode::Char('k') => self.select(-1),
                         KeyCode::Char('f') => self.filter_logs = !self.filter_logs,
+                        KeyCode::Char('g') => self.graph = !self.graph,
                         KeyCode::Char('s') if !self.disconnected => {
                             let _ = self.client.stop();
                         }
@@ -181,6 +194,14 @@ impl App {
             self.select(0);
         }
 
+        if self.latency_polled.is_none_or(|t| t.elapsed() >= LATENCY_REFRESH) {
+            self.latency_polled = Some(Instant::now());
+            if let Ok(report) = self.client.latency() {
+                let by_input = report.inputs.into_iter().map(|i| ((i.node.clone(), i.input.clone()), i));
+                self.latency = by_input.collect();
+            }
+        }
+
         self.logs.extend(logs.lines);
         let excess = self.logs.len().saturating_sub(LOG_LINES);
         self.logs.drain(..excess);
@@ -200,6 +221,23 @@ impl App {
             }
         }
         (rate_in, rate_out)
+    }
+
+    /// Latency p50 and p99 into a link's targets: the worst of them.
+    fn link_latency(&self, link: &LinkStatus) -> Option<(u64, u64, Option<u64>)> {
+        let reports = link.targets.iter().filter_map(|t| {
+            let (node, input) = endpoint_parts(t);
+            self.latency.get(&(node.to_owned(), input.to_owned()))
+        });
+        reports.fold(None, |worst, r| {
+            let (p50, p99) = (r.latency.p50, r.latency.p99);
+            let error = r.clock_error_ns.filter(|&e| e > 0);
+            match worst {
+                Some((w50, w99, e)) if w99 >= p99 => Some((w50, w99, e)),
+                _ if r.latency.count == 0 => worst,
+                _ => Some((p50, p99, error)),
+            }
+        })
     }
 
     fn node_color(&self, node: &str) -> Color {
@@ -225,13 +263,17 @@ impl App {
         let (from_width, to_width) = link_widths(&status);
         // Link columns, spacing, borders and padding.
         let links_width =
-            (from_width + to_width + 1 + 7 + 12 + 9 + 5 + 4).clamp(middle.width * 3 / 5, middle.width * 4 / 5);
+            (from_width + to_width + 1 + 7 + 12 + 9 + 18 + 6 + 4).clamp(middle.width * 3 / 5, middle.width * 4 / 5);
         let [links, activity] =
             Layout::horizontal([Constraint::Length(links_width), Constraint::Fill(1)]).areas(middle);
 
         self.draw_header(frame, header, &status);
         self.draw_nodes(frame, nodes, &status);
-        self.draw_links(frame, links, &status);
+        if self.graph {
+            self.draw_graph(frame, links, &status);
+        } else {
+            self.draw_links(frame, links, &status);
+        }
         self.draw_activity(frame, activity);
         self.draw_logs(frame, logs);
         draw_footer(frame, footer);
@@ -244,10 +286,18 @@ impl App {
             _ if status.stopping => ("stopping", Color::Yellow),
             _ => ("running", Color::Green),
         };
-        let machine = match &status.machine {
+        let machines: BTreeSet<&str> = status.nodes.iter().filter_map(|n| n.machine.as_deref()).collect();
+        let mut machine = match &status.machine {
             Some(machine) => vec![Span::styled("   machine ", MUTED), Span::raw(machine.clone())],
+            None if status.coordinator => vec![
+                Span::styled("   cluster ", MUTED),
+                Span::raw(machines.iter().copied().collect::<Vec<_>>().join(", ")),
+            ],
             None => vec![],
         };
+        if let Some(deployment) = &status.deployment {
+            machine.extend([Span::styled("   deployment ", MUTED), Span::raw(deployment.clone())]);
+        }
         let dataflow = match &status.dataflow {
             Some(path) => path.file_name().map_or(path.display().to_string(), |f| f.to_string_lossy().into()),
             None => "waiting for a dataflow".into(),
@@ -272,6 +322,13 @@ impl App {
 
     fn draw_nodes(&mut self, frame: &mut Frame, area: Rect, status: &Status) {
         let id_width = status.nodes.iter().map(|n| n.id.len()).max().unwrap_or(4).max(4) as u16 + 2;
+        let program_width = status.nodes.iter().map(|n| n.program.len()).max().unwrap_or(7).max(7) as u16;
+        let multi = status.nodes.iter().any(|n| n.machine.is_some());
+        let machine_width = if multi {
+            status.nodes.iter().filter_map(|n| n.machine.as_ref()).map(|m| m.len()).max().unwrap_or(7).max(7) as u16
+        } else {
+            0
+        };
         let rows = status.nodes.iter().map(|node| {
             let (rate_in, rate_out) = self.node_rates(&node.id, &status.links);
             let (state, state_color) = state_label(&node.state);
@@ -281,6 +338,8 @@ impl App {
             };
             let row = Row::new(vec![
                 Line::styled(node.id.clone(), Style::new().fg(self.node_color(&node.id)).bold()),
+                Line::styled(node.program.clone(), MUTED),
+                Line::raw(node.machine.clone().unwrap_or_default()),
                 Line::styled(state, state_color),
                 Line::styled(node.pid.map_or("—".into(), |p| p.to_string()), MUTED),
                 Line::raw(fmt::rate(rate_in.msgs)).right_aligned(),
@@ -297,6 +356,8 @@ impl App {
             rows,
             [
                 Constraint::Length(id_width),
+                Constraint::Length(program_width),
+                Constraint::Length(machine_width),
                 Constraint::Length(11),
                 Constraint::Length(8),
                 Constraint::Length(8),
@@ -305,7 +366,20 @@ impl App {
                 Constraint::Min(18),
             ],
         )
-        .header(header_row(["NODE", "STATE", "PID", "IN/s", "OUT/s", "OUT", "SHARED MEMORY"], [3, 4, 5]))
+        .header(header_row(
+            [
+                "NODE",
+                "PROGRAM",
+                if multi { "MACHINE" } else { "" },
+                "STATE",
+                "PID",
+                "IN/s",
+                "OUT/s",
+                "OUT",
+                "SHARED MEMORY",
+            ],
+            [5, 6, 7],
+        ))
         .row_highlight_style(Style::new().bg(Color::Indexed(236)))
         .highlight_symbol("▌")
         .block(panel("Nodes"));
@@ -320,13 +394,21 @@ impl App {
                 0 => Line::styled("—", MUTED),
                 _ => Line::raw(link.targets.join(", ")),
             };
+            let (p50, p99) = match self.link_latency(link) {
+                Some((p50, p99, error)) => {
+                    let error = error.map_or(String::new(), |e| format!(" ±{}", fmt::nanos(e)));
+                    (Line::raw(fmt::nanos(p50)), Line::raw(format!("{}{error}", fmt::nanos(p99))))
+                }
+                None => (Line::styled("—", MUTED), Line::styled("—", MUTED)),
+            };
             Row::new(vec![
                 Line::styled(link.source.clone(), Style::new().fg(self.node_color(node_of(&link.source)))),
                 Line::styled("→", MUTED),
                 targets,
                 Line::raw(fmt::rate(rate.msgs)).right_aligned(),
                 Line::raw(format!("{}/s", fmt::bytes(rate.bytes))).right_aligned(),
-                Line::styled(fmt::bytes(link.bytes as f64), MUTED).right_aligned(),
+                p50.right_aligned(),
+                p99.right_aligned(),
             ])
         });
         let table = Table::new(
@@ -338,11 +420,93 @@ impl App {
                 Constraint::Length(7),
                 Constraint::Length(12),
                 Constraint::Length(9),
+                Constraint::Length(18),
             ],
         )
-        .header(header_row(["FROM", "", "TO", "MSG/s", "THROUGHPUT", "TOTAL"], [3, 4, 5]))
+        .header(header_row(["FROM", "", "TO", "MSG/s", "THROUGHPUT", "LAT p50", "p99"], [3, 4, 5, 6]))
         .block(panel("Links"));
         frame.render_widget(table, area);
+    }
+
+    /// The dataflow as a graph: nodes in columns by depth (sources on the
+    /// left), each link labelled with its rate and median latency. Links
+    /// crossing machines are yellow.
+    fn draw_graph(&self, frame: &mut Frame, area: Rect, status: &Status) {
+        let block = panel("Graph");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let (w, h) = (inner.width as f64, inner.height as f64);
+        if status.nodes.is_empty() || w < 10.0 || h < 3.0 {
+            return;
+        }
+        let order: HashMap<&str, usize> = status.nodes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
+        let machine_of: HashMap<&str, Option<&str>> =
+            status.nodes.iter().map(|n| (n.id.as_str(), n.machine.as_deref())).collect();
+        let edges: Vec<(&str, &str, &LinkStatus)> = (status.links.iter())
+            .flat_map(|l| l.targets.iter().map(move |t| (node_of(&l.source), node_of(t), l)))
+            .filter(|(a, b, _)| order.contains_key(a) && order.contains_key(b))
+            .collect();
+        // Depth by longest path, following links that go down the dataflow's
+        // order (a link back up, closing a cycle, doesn't push nodes right).
+        let mut depth: HashMap<&str, usize> = order.keys().map(|n| (*n, 0)).collect();
+        for _ in 0..order.len() {
+            for (a, b, _) in &edges {
+                if order[a] < order[b] && depth[b] < depth[a] + 1 {
+                    depth.insert(b, depth[a] + 1);
+                }
+            }
+        }
+        let columns = depth.values().max().unwrap() + 1;
+        let mut rows: Vec<Vec<&str>> = vec![Vec::new(); columns];
+        for node in &status.nodes {
+            rows[depth[node.id.as_str()]].push(&node.id);
+        }
+        // Where each node's label starts and ends, and its line (canvas y
+        // grows upwards).
+        let mut place: HashMap<&str, (f64, f64, f64)> = HashMap::new();
+        for (col, nodes) in rows.iter().enumerate() {
+            let x = (w * col as f64 / columns as f64).floor() + 1.0;
+            for (i, node) in nodes.iter().enumerate() {
+                let y = (h - h * (i as f64 + 0.5) / nodes.len() as f64).floor();
+                place.insert(node, (x, x + node.len() as f64 + 2.0, y));
+            }
+        }
+        let canvas = Canvas::default().x_bounds([0.0, w]).y_bounds([0.0, h]).paint(|ctx| {
+            for (a, b, link) in &edges {
+                let ((_, ax, ay), (bx, _, by)) = (place[a], place[b]);
+                let remote = machine_of[a] != machine_of[b];
+                let color = if remote { Color::Yellow } else { MUTED };
+                let rate = self.link_rates.get(&link.source).copied().unwrap_or_default();
+                let latency =
+                    self.link_latency(link).map_or(String::new(), |(p50, _, _)| format!(" {}", fmt::nanos(p50)));
+                let label = format!("{}/s{latency}", fmt::rate(rate.msgs));
+                let mut segment = |x1, y1, x2, y2| ctx.draw(&CanvasLine { x1, y1, x2, y2, color });
+                if depth[b] > depth[a] {
+                    segment(ax, ay + 0.5, bx - 1.0, by + 0.5);
+                    ctx.print(bx - 1.0, by, Line::styled(">", Style::new().fg(color)));
+                    let mid = ((ax + bx) / 2.0 - label.len() as f64 / 2.0).max(ax);
+                    ctx.print(mid, (ay + by) / 2.0 + 1.0, Line::styled(label, Style::new().fg(color)));
+                } else {
+                    // Back up the dataflow (a cycle): around, underneath.
+                    let low = ay.min(by) - 2.0;
+                    segment(ax, ay + 0.5, ax, low + 0.5);
+                    segment(ax, low + 0.5, bx, low + 0.5);
+                    segment(bx, low + 0.5, bx, by - 0.5);
+                    ctx.print(bx, by - 1.0, Line::styled("^", Style::new().fg(color)));
+                    let mid = ((ax + bx) / 2.0 - label.len() as f64 / 2.0).max(0.0);
+                    ctx.print(mid, low, Line::styled(format!(" {label} "), Style::new().fg(color)));
+                }
+            }
+            ctx.layer();
+            for (node, (x, _, y)) in &place {
+                let style = Style::new().fg(self.node_color(node)).bold();
+                ctx.print(*x, *y, Line::styled(format!("[{node}]"), style));
+                if let Some(Some(machine)) = machine_of.get(node) {
+                    ctx.print(*x + 1.0, *y - 1.0, Line::styled(format!("@{machine}"), MUTED));
+                }
+            }
+        });
+        frame.render_widget(canvas, inner);
     }
 
     fn draw_activity(&self, frame: &mut Frame, area: Rect) {
@@ -407,6 +571,8 @@ fn draw_footer(frame: &mut Frame, area: Rect) {
         label(" select   "),
         key("f"),
         label(" filter logs   "),
+        key("g"),
+        label(" graph/links   "),
         key("s"),
         label(" stop dataflow   "),
         key("q"),
@@ -423,7 +589,7 @@ fn panel(title: &str) -> Block<'static> {
     }
 }
 
-fn header_row<const N: usize>(labels: [&'static str; N], right_aligned: [usize; 3]) -> Row<'static> {
+fn header_row<const N: usize, const R: usize>(labels: [&'static str; N], right_aligned: [usize; R]) -> Row<'static> {
     let cells = labels.into_iter().enumerate().map(|(i, label)| {
         let line = Line::styled(label, Style::new().fg(ACCENT).bold());
         if right_aligned.contains(&i) {
@@ -433,6 +599,12 @@ fn header_row<const N: usize>(labels: [&'static str; N], right_aligned: [usize; 
         }
     });
     Row::new(cells)
+}
+
+/// `(node, input)` of `node/input` or `node/input@machine`.
+fn endpoint_parts(endpoint: &str) -> (&str, &str) {
+    let endpoint = endpoint.split('@').next().unwrap_or(endpoint);
+    endpoint.split_once('/').unwrap_or((endpoint, ""))
 }
 
 /// Widths of the FROM and TO columns.
