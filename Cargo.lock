@@ -671,8 +671,10 @@ name = "keel-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "keel",
  "keel-daemon",
  "ratatui",
+ "serde_json",
 ]
 
 [[package]]
