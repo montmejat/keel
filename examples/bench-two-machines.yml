@@ -1,0 +1,19 @@
+# The benchmark with source and sink on different machines (see
+# pipeline-two-machines.yml for starting the daemons). Build with
+# `cargo build --release` first.
+machines:
+  robot: 127.0.0.1:7401
+  base: 127.0.0.1:7402
+
+nodes:
+  - id: source
+    machine: robot
+    path: ../target/release/bench-source
+    inputs:
+      reply: sink/reply
+
+  - id: sink
+    machine: base
+    path: ../target/release/bench-sink
+    inputs:
+      data: source/data

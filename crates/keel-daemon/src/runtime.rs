@@ -6,7 +6,8 @@
 //! /dev/shm/keel-<pid>/<node>.<slot>          shared-memory regions
 //! ```
 //!
-//! A daemon removes its files on exit, and on startup removes those of
+//! The sockets and regions of a dataflow go away when it ends; the control
+//! socket, when the daemon exits. On startup, a daemon removes the files of
 //! daemons that died without cleaning up.
 
 use std::io;
@@ -41,37 +42,23 @@ fn alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
-/// This daemon's runtime files, removed on drop.
-pub(crate) struct RuntimeFiles {
+/// The daemon's own directory and control socket, removed on drop.
+pub(crate) struct RuntimeDir {
     pub dir: PathBuf,
-    pub shm_dir: PathBuf,
 }
 
-impl RuntimeFiles {
+impl RuntimeDir {
     pub fn create() -> io::Result<Self> {
-        let pid = std::process::id();
         let base = base_dir();
         std::fs::create_dir_all(&base)?;
         remove_stale(&base, "");
-        let dir = base.join(pid.to_string());
-        // tmpfs, so regions live in RAM. Without it, fall back to our own dir.
-        let dev_shm = Path::new("/dev/shm");
-        let shm_dir = if dev_shm.is_dir() {
-            remove_stale(dev_shm, "keel-");
-            dev_shm.join(format!("keel-{pid}"))
-        } else {
-            dir.join("shm")
-        };
-        let files = Self { dir, shm_dir };
-        let _ = std::fs::remove_dir_all(&files.dir);
-        let _ = std::fs::remove_dir_all(&files.shm_dir);
-        std::fs::create_dir(&files.dir)?;
-        std::fs::create_dir(&files.shm_dir)?;
-        Ok(files)
-    }
-
-    pub fn nodes_socket(&self) -> PathBuf {
-        self.dir.join("nodes.sock")
+        if Path::new(DEV_SHM).is_dir() {
+            remove_stale(Path::new(DEV_SHM), "keel-");
+        }
+        let dir = base.join(std::process::id().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir)?;
+        Ok(Self { dir })
     }
 
     pub fn control_socket(&self) -> PathBuf {
@@ -79,10 +66,41 @@ impl RuntimeFiles {
     }
 }
 
-impl Drop for RuntimeFiles {
+impl Drop for RuntimeDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.shm_dir);
         let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+const DEV_SHM: &str = "/dev/shm";
+
+/// The files of the dataflow a daemon is running: the socket its nodes
+/// connect to and their shared-memory regions. Removed on drop.
+pub(crate) struct SessionFiles {
+    pub nodes_socket: PathBuf,
+    pub shm_dir: PathBuf,
+}
+
+impl SessionFiles {
+    /// `runtime_dir` is the daemon's [`RuntimeDir::dir`].
+    pub fn create(runtime_dir: &Path) -> io::Result<Self> {
+        // tmpfs, so regions live in RAM. Without it, fall back to our own dir.
+        let shm_dir = match Path::new(DEV_SHM) {
+            dev_shm if dev_shm.is_dir() => dev_shm.join(format!("keel-{}", std::process::id())),
+            _ => runtime_dir.join("shm"),
+        };
+        let files = Self { nodes_socket: runtime_dir.join("nodes.sock"), shm_dir };
+        let _ = std::fs::remove_file(&files.nodes_socket);
+        let _ = std::fs::remove_dir_all(&files.shm_dir);
+        std::fs::create_dir(&files.shm_dir)?;
+        Ok(files)
+    }
+}
+
+impl Drop for SessionFiles {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.nodes_socket);
+        let _ = std::fs::remove_dir_all(&self.shm_dir);
     }
 }
 

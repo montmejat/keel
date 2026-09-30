@@ -40,7 +40,11 @@ pub enum Reply {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Status {
     pub pid: u32,
-    pub dataflow: PathBuf,
+    /// Machine name, when the daemon runs part of a multi-machine dataflow.
+    pub machine: Option<String>,
+    /// `None` while a `keel daemon` waits for a dataflow.
+    pub dataflow: Option<PathBuf>,
+    /// Of the running dataflow.
     pub uptime_ms: u64,
     pub stopping: bool,
     pub nodes: Vec<NodeStatus>,
@@ -78,7 +82,7 @@ pub enum NodeState {
 pub struct LinkStatus {
     /// `node/output`
     pub source: String,
-    /// `node/input`
+    /// `node/input`, or `node/input@machine` for a node on another machine.
     pub targets: Vec<String>,
     pub messages: u64,
     pub bytes: u64,

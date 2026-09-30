@@ -1,4 +1,5 @@
-//! Wire protocol between the daemon and nodes, over a Unix socket.
+//! Wire protocols: daemon <-> nodes over a Unix socket, and daemon <-> daemon
+//! over TCP.
 //!
 //! Every frame is `[u32 LE length][u8 tag][fields]`; each field is
 //! `[u32 LE length][bytes]`. Hand-rolled and dependency-free on purpose.
@@ -84,6 +85,42 @@ impl DaemonMsg {
             102 => DaemonMsg::Input { input_id: f.string()?, source: f.string()?, slot: f.u32()?, len: f.u64()? },
             103 => DaemonMsg::Stop,
             t => return Err(invalid(format!("unknown daemon message tag {t}"))),
+        };
+        Ok(Some(msg))
+    }
+}
+
+/// Daemon -> daemon, over TCP: what local nodes send to nodes on the other
+/// machine. One connection per direction and machine pair, so everything a
+/// node sends arrives in order, `Closed` last.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeerMsg {
+    /// `source/output` sent a message; its payload travels with it.
+    Data { source: String, output: String, payload: Vec<u8> },
+    /// `node` has exited: nothing more will come from it.
+    Closed { node: String },
+}
+
+impl PeerMsg {
+    pub fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
+        match self {
+            PeerMsg::Data { source, output, payload } => Self::write_data(w, source, output, payload),
+            PeerMsg::Closed { node } => write_frame(w, 202, &[node.as_bytes()]),
+        }
+    }
+
+    /// Writes a `Data` message straight from a borrowed payload.
+    pub fn write_data(w: &mut impl Write, source: &str, output: &str, payload: &[u8]) -> io::Result<()> {
+        write_frame(w, 201, &[source.as_bytes(), output.as_bytes(), payload])
+    }
+
+    /// `Ok(None)` on a clean end of stream.
+    pub fn read_from(r: &mut impl Read) -> io::Result<Option<Self>> {
+        let Some((tag, mut f)) = read_frame(r)? else { return Ok(None) };
+        let msg = match tag {
+            201 => PeerMsg::Data { source: f.string()?, output: f.string()?, payload: f.bytes()? },
+            202 => PeerMsg::Closed { node: f.string()? },
+            t => return Err(invalid(format!("unknown peer message tag {t}"))),
         };
         Ok(Some(msg))
     }
@@ -182,5 +219,17 @@ mod tests {
         for m in &daemon {
             assert_eq!(DaemonMsg::read_from(&mut r).unwrap().as_ref(), Some(m));
         }
+
+        let peer = [
+            PeerMsg::Data { source: "camera".into(), output: "frames".into(), payload: vec![7; 1000] },
+            PeerMsg::Closed { node: "camera".into() },
+        ];
+        let mut wire = Vec::new();
+        peer.iter().for_each(|m| m.write_to(&mut wire).unwrap());
+        let mut r = wire.as_slice();
+        for m in &peer {
+            assert_eq!(PeerMsg::read_from(&mut r).unwrap().as_ref(), Some(m));
+        }
+        assert_eq!(PeerMsg::read_from(&mut r).unwrap(), None);
     }
 }

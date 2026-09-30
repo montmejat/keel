@@ -20,6 +20,26 @@ Decisions and their reasoning live in [`decisions/`](decisions/).
 | Provisioning | How does a bare machine become a keel machine? | `keel provision <host>` over SSH installs and starts the daemon |
 | Tooling | What's going on right now? | A `keel` CLI and TUI, clients of the daemons' control API |
 
+## Processes
+
+```
+                  ┌─────────────────────────┐
+                  │ keel run  (coordinator) │
+                  └───┬─────────────────┬───┘
+                      │                 │     control: JSON lines over TCP
+                      │                 │     (spawn, start, stop, abort;
+                      │                 │     events and logs back)
+            ┌─────────┴─────┐     ┌─────┴─────────┐
+            │  keel daemon  │────>│  keel daemon  │   data: PeerMsg over TCP,
+            │    "robot"    │<────│    "base"     │   one connection per direction
+            └──┬─────────┬──┘     └───────┬───────┘
+               │         │                │     Unix socket + /dev/shm
+            camera   recorder          detector
+```
+
+For a single-machine dataflow, `keel run` is the coordinator and the only
+daemon in one process.
+
 ## Planes
 
 - **Data plane**: node-to-node messages. Must be fast; the daemon should not
@@ -59,8 +79,9 @@ overlaps with systemd.
 3. **Control API + first TUI** (done): the daemon serves its state over a
    control socket; `keel ps | logs | stop | top` are clients of it. The
    daemon also became a proper supervisor: log capture, ordered stop.
-4. **Multi-machine**: coordinator, several daemons, TCP between machines,
-   tested with containers.
+4. **Multi-machine** (done): `keel daemon` per machine, `keel run` as the
+   coordinator, TCP between daemons, tested with two local daemons and with
+   Podman containers.
 5. **Packaging and deployment**: bundles, hashing, push and cache.
 6. **Provisioning**: SSH bootstrap of a fresh machine.
 7. **Lifecycle polish**: restart policies, health checks, rolling updates.
@@ -97,6 +118,20 @@ Unix socket.
 **Milestone 3**: the daemon now counts messages per output and captures
 node output through pipes. Latency is unchanged; small-message throughput is
 10–20% lower (e.g. 64 B: 257k msg/s, 8 MiB: 100k msg/s).
+
+**Milestone 4, across machines**: source and sink on two daemons on one
+host (`examples/bench-two-machines.yml`), so every message crosses TCP.
+
+```
+    size    rtt p50    rtt p99   throughput      msg/s
+     64B     57.9µs    730.4µs        10 MB/s     151343
+    4KiB     59.0µs    133.3µs       556 MB/s     135731
+   64KiB     71.9µs    211.8µs      3564 MB/s      54386
+    1MiB    476.1µs    629.2µs      2592 MB/s       2472
+    8MiB      5.6ms      7.3ms      1437 MB/s        171
+```
+
+Unlike the shared-memory numbers, these include real copies of the payload.
 
 With shared memory, latency is flat at ~20 µs whatever the size: an 8 MiB frame went from
 29 ms to 22 µs round trip. The MB/s column is size × msg/s. Nothing reads or

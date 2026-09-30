@@ -5,15 +5,17 @@ stack fits together: transport, runtime, lifecycle, coordination, packaging,
 deployment, provisioning and tooling. See [docs/architecture.md](docs/architecture.md)
 and the [decision records](docs/decisions/).
 
-Today: a daemon runs the nodes of a dataflow on one machine. Nodes exchange
-payloads through shared memory, zero-copy; the daemon forwards small
-descriptors, supervises the nodes and serves a control API. Linux only.
+Today: dataflows run on one machine or across several. On a machine, nodes
+exchange payloads through shared memory, zero-copy, and a daemon forwards
+small descriptors, supervises the nodes and serves a control API. Between
+machines, daemons forward payloads over TCP. Linux only.
 
 ```
 crates/keel          node API
-crates/keel-daemon   runs a dataflow: spawns, routes, supervises, control API
+crates/keel-daemon   runs dataflows: sessions, coordinator, daemon, control API
 crates/keel-cli      the `keel` command, including the `keel top` TUI
-examples/            talker/listener, a camera pipeline, a benchmark
+examples/            talker/listener, a camera pipeline, a benchmark, each also
+                     across two machines; containers/ runs them in Podman
 ```
 
 ## Try it
@@ -31,6 +33,22 @@ In another terminal:
 ./target/debug/keel logs -f      # follow all logs; `keel logs camera` for one node
 ./target/debug/keel stop         # graceful stop (so is Ctrl-C in the first terminal)
 ```
+
+### Across machines
+
+List machines in the dataflow and place each node on one
+(`examples/pipeline-two-machines.yml`), start a daemon per machine, then run
+it from anywhere:
+
+```sh
+./target/debug/keel daemon --listen 127.0.0.1:7401 &    # "robot"
+./target/debug/keel daemon --listen 127.0.0.1:7402 &    # "base"
+./target/debug/keel run examples/pipeline-two-machines.yml
+```
+
+Or with each machine in its own container (Podman):
+`examples/containers/run.sh`. Daemons have no authentication: anyone who
+can reach one can run programs through it, so only listen on trusted networks.
 
 Other examples: `keel run examples/dataflow.yml` (talker/listener), and the
 benchmark: `cargo build --release && ./target/release/keel run examples/bench.yml`.

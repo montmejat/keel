@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use keel_daemon::control::{Client, LogLine, NodeState};
-use keel_daemon::runtime;
+use keel_daemon::{runtime, wire};
 
 #[derive(Parser)]
 #[command(name = "keel", version, about = "A minimal robotics-style middleware")]
@@ -23,8 +23,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run a dataflow on this machine, in the foreground
+    /// Run a dataflow in the foreground: on this machine, or across the
+    /// machines it lists
     Run { dataflow: PathBuf },
+    /// Run this machine's daemon, which multi-machine dataflows run on
+    Daemon {
+        /// Address to listen on. Anyone who can reach it can run programs on
+        /// this machine: only listen on networks you trust.
+        #[arg(long, default_value = wire::DEFAULT_LISTEN)]
+        listen: String,
+    },
     /// List the running dataflows
     Ps,
     /// Live view of a running dataflow
@@ -66,6 +74,7 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             let ok = keel_daemon::run(&dataflow)?;
             return Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE });
         }
+        Command::Daemon { listen } => keel_daemon::serve(&listen)?,
         Command::Ps => ps()?,
         Command::Top { pid } => top::run(pick(pid)?)?,
         Command::Logs { node, follow, pid } => logs(pick(pid)?, node.as_deref(), follow)?,
@@ -84,7 +93,7 @@ fn pick(pid: Option<u32>) -> Result<u32, String> {
         return Ok(pid);
     }
     match runtime::running_daemons()[..] {
-        [] => Err("no dataflow is running".into()),
+        [] => Err("no dataflow or daemon is running".into()),
         [pid] => Ok(pid),
         ref pids => {
             let pids: Vec<String> = pids.iter().map(u32::to_string).collect();
@@ -94,18 +103,24 @@ fn pick(pid: Option<u32>) -> Result<u32, String> {
 }
 
 fn ps() -> Result<(), Box<dyn Error>> {
-    println!("{:<8} {:>8} {:>6}  {:<9} DATAFLOW", "PID", "UPTIME", "NODES", "STATE");
+    println!("{:<8} {:>8} {:>6}  {:<9} {:<10} DATAFLOW", "PID", "UPTIME", "NODES", "STATE", "MACHINE");
     for pid in runtime::running_daemons() {
         // A daemon may exit between listing and connecting.
         let Ok(status) = Client::connect(pid).and_then(|mut c| c.status()) else { continue };
         let running = status.nodes.iter().filter(|n| n.state == NodeState::Running).count();
+        let state = match &status.dataflow {
+            None => "idle",
+            Some(_) if status.stopping => "stopping",
+            Some(_) => "running",
+        };
         println!(
-            "{:<8} {:>8} {:>6}  {:<9} {}",
+            "{:<8} {:>8} {:>6}  {:<9} {:<10} {}",
             pid,
             fmt::duration(Duration::from_millis(status.uptime_ms)),
             format!("{running}/{}", status.nodes.len()),
-            if status.stopping { "stopping" } else { "running" },
-            status.dataflow.display()
+            state,
+            status.machine.as_deref().unwrap_or("-"),
+            status.dataflow.as_ref().map_or("-".into(), |d| d.display().to_string())
         );
     }
     Ok(())

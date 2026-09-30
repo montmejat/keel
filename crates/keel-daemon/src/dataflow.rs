@@ -1,21 +1,29 @@
-//! The dataflow file: which nodes to run and how their outputs feed inputs.
+//! The dataflow file: which nodes to run, where, and how their outputs feed
+//! inputs.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dataflow {
+    /// Machine name -> address of the `keel daemon` running there. Empty
+    /// means the whole dataflow runs on this machine, inside `keel run`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub machines: BTreeMap<String, String>,
     pub nodes: Vec<NodeConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
     pub id: String,
+    /// Where the node runs: a key of `Dataflow::machines`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
     /// Executable, relative to the dataflow file.
     pub path: PathBuf,
     /// `input_id: source_node/output_id`
@@ -55,6 +63,19 @@ impl Dataflow {
             .find(|id| id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
         {
             return Err(io::Error::other(format!("node id `{bad}` may only contain letters, digits, `_` and `-`")));
+        }
+        for node in &self.nodes {
+            match &node.machine {
+                None if self.machines.is_empty() => {}
+                Some(m) if self.machines.contains_key(m) => {}
+                None => {
+                    return Err(io::Error::other(format!(
+                        "node `{}` needs a `machine:`, since the dataflow lists machines",
+                        node.id
+                    )))
+                }
+                Some(m) => return Err(io::Error::other(format!("node `{}` runs on unknown machine `{m}`", node.id))),
+            }
         }
         let mut routes = Routes::new();
         let mut upstream = HashMap::new();
@@ -104,13 +125,33 @@ mod tests {
     }
 
     #[test]
+    fn places_nodes_on_machines() {
+        let yaml = "{ machines: { m: 'x:1', n: 'y:2' }, nodes: [{ id: a, path: a, machine: m }, { id: b, path: b, machine: n, inputs: { i: a/o } }] }";
+        let dataflow = Dataflow::parse(yaml).unwrap();
+        dataflow.resolve().unwrap();
+        assert_eq!(dataflow.nodes[1].machine.as_deref(), Some("n"));
+    }
+
+    #[test]
     fn rejects_invalid_dataflows() {
         let duplicate = "nodes: [{ id: a, path: a }, { id: a, path: b }]";
         let unknown_node = "nodes: [{ id: a, path: a, inputs: { x: nope/out } }]";
         let no_output = "nodes: [{ id: a, path: a, inputs: { x: a } }]";
         let unknown_field = "nodes: [{ id: a, path: a, typo: 1 }]";
         let bad_id = "nodes: [{ id: ../a, path: a }]";
-        for yaml in [duplicate, unknown_node, no_output, unknown_field, bad_id] {
+        let no_machine = "{ machines: { m: 'x:1' }, nodes: [{ id: a, path: a }] }";
+        let unknown_machine = "{ machines: { m: 'x:1' }, nodes: [{ id: a, path: a, machine: n }] }";
+        let machine_without_machines = "nodes: [{ id: a, path: a, machine: m }]";
+        for yaml in [
+            duplicate,
+            unknown_node,
+            no_output,
+            unknown_field,
+            bad_id,
+            no_machine,
+            unknown_machine,
+            machine_without_machines,
+        ] {
             assert!(resolve(yaml).is_err(), "accepted: {yaml}");
         }
     }

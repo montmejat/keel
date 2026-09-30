@@ -138,6 +138,18 @@ impl App {
             return;
         };
 
+        // A daemon moved on to another dataflow: start over.
+        let previous_uptime = self.status.as_ref().map_or(0, |s| s.uptime_ms);
+        if logs.next < self.next_log || status.uptime_ms < previous_uptime {
+            self.logs.clear();
+            self.next_log = 0;
+            self.counters.clear();
+            self.link_rates.clear();
+            self.history.clear();
+            self.status = Some(status);
+            return;
+        }
+
         let now = Instant::now();
         if let Some((then, before)) = self.counters.front() {
             let dt = now.duration_since(*then).as_secs_f64();
@@ -164,6 +176,10 @@ impl App {
             history.push_back((rate_in.msgs + rate_out.msgs).round() as u64);
         }
         self.status = Some(status);
+        // Drawing an empty table (an idle daemon) clears the selection.
+        if self.table.selected().is_none() {
+            self.select(0);
+        }
 
         self.logs.extend(logs.lines);
         let excess = self.logs.len().saturating_sub(LOG_LINES);
@@ -206,8 +222,12 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(frame.area());
+        let (from_width, to_width) = link_widths(&status);
+        // Link columns, spacing, borders and padding.
+        let links_width =
+            (from_width + to_width + 1 + 7 + 12 + 9 + 5 + 4).clamp(middle.width * 3 / 5, middle.width * 4 / 5);
         let [links, activity] =
-            Layout::horizontal([Constraint::Percentage(66), Constraint::Percentage(34)]).areas(middle);
+            Layout::horizontal([Constraint::Length(links_width), Constraint::Fill(1)]).areas(middle);
 
         self.draw_header(frame, header, &status);
         self.draw_nodes(frame, nodes, &status);
@@ -220,20 +240,33 @@ impl App {
     fn draw_header(&self, frame: &mut Frame, area: Rect, status: &Status) {
         let (label, color) = match () {
             _ if self.disconnected => ("exited", Color::Red),
+            _ if status.dataflow.is_none() => ("idle", Color::Blue),
             _ if status.stopping => ("stopping", Color::Yellow),
             _ => ("running", Color::Green),
         };
-        let line = Line::from(vec![
+        let machine = match &status.machine {
+            Some(machine) => vec![Span::styled("   machine ", MUTED), Span::raw(machine.clone())],
+            None => vec![],
+        };
+        let dataflow = match &status.dataflow {
+            Some(path) => path.file_name().map_or(path.display().to_string(), |f| f.to_string_lossy().into()),
+            None => "waiting for a dataflow".into(),
+        };
+        let mut spans = vec![
             Span::styled(" keel ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
             Span::raw("  "),
             Span::styled(format!("● {label}"), Style::new().fg(color).bold()),
             Span::styled("   pid ", MUTED),
             Span::raw(status.pid.to_string()),
+        ];
+        spans.extend(machine);
+        spans.extend([
             Span::styled("   up ", MUTED),
             Span::raw(fmt::duration(Duration::from_millis(status.uptime_ms))),
             Span::styled("   ", MUTED),
-            Span::styled(status.dataflow.display().to_string(), MUTED),
+            Span::styled(dataflow, MUTED),
         ]);
+        let line = Line::from(spans);
         frame.render_widget(line, area);
     }
 
@@ -280,9 +313,7 @@ impl App {
     }
 
     fn draw_links(&self, frame: &mut Frame, area: Rect, status: &Status) {
-        let widest = |names: &mut dyn Iterator<Item = usize>| names.max().unwrap_or(0).max(4) as u16;
-        let from_width = widest(&mut status.links.iter().map(|l| l.source.len()));
-        let to_width = widest(&mut status.links.iter().map(|l| l.targets.join(", ").len()));
+        let (from_width, to_width) = link_widths(status);
         let rows = status.links.iter().map(|link| {
             let rate = self.link_rates.get(&link.source).copied().unwrap_or_default();
             let targets = match link.targets.len() {
@@ -402,6 +433,14 @@ fn header_row<const N: usize>(labels: [&'static str; N], right_aligned: [usize; 
         }
     });
     Row::new(cells)
+}
+
+/// Widths of the FROM and TO columns.
+fn link_widths(status: &Status) -> (u16, u16) {
+    let widest = |widths: &mut dyn Iterator<Item = usize>| widths.max().unwrap_or(0).max(4) as u16;
+    let from = widest(&mut status.links.iter().map(|l| l.source.len()));
+    let to = widest(&mut status.links.iter().map(|l| l.targets.join(", ").len()));
+    (from, to)
 }
 
 fn state_label(state: &NodeState) -> (String, Color) {

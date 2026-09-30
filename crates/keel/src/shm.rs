@@ -166,6 +166,10 @@ impl Pool {
         unsafe { std::slice::from_raw_parts_mut(region.payload(), len) }
     }
 
+    pub fn region(&self, slot: u32) -> &Region {
+        &self.slots[slot as usize].1
+    }
+
     /// Takes the in-transit reference, right before the message is sent.
     pub fn publish(&self, slot: u32) {
         self.slots[slot as usize].1.refcount().store(1, Ordering::Release);

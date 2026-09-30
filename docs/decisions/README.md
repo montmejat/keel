@@ -18,3 +18,4 @@ Superseded records stay, with a link to what replaced them.
 | [0010](0010-dependencies.md) | Build the core by hand, use crates at the edges | Proposed |
 | [0011](0011-control-api.md) | Control API: JSON lines over a Unix socket | Proposed |
 | [0012](0012-daemon-as-init.md) | The daemon is a small init for its nodes | Proposed |
+| [0013](0013-data-between-machines.md) | Data between machines: TCP to the peer daemon, into its shared memory | Proposed |

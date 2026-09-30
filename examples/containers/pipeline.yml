@@ -1,0 +1,24 @@
+# The camera pipeline across two containers, `robot` and `base`, each running
+# `keel daemon`. Started by run.sh, which also runs the coordinator in a
+# third container. The repository is mounted at the same path in all of
+# them, so node paths resolve the same way everywhere.
+machines:
+  robot: robot:7400
+  base: base:7400
+
+nodes:
+  - id: camera
+    machine: robot
+    path: ../../target/debug/camera
+
+  - id: detector
+    machine: base
+    path: ../../target/debug/detector
+    inputs:
+      frames: camera/frames
+
+  - id: recorder
+    machine: robot
+    path: ../../target/debug/recorder
+    inputs:
+      brightness: detector/brightness
