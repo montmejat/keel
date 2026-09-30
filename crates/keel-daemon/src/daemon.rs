@@ -1,11 +1,13 @@
 //! `keel daemon`: a long-lived service that runs its machine's share of the
-//! dataflows a coordinator sends it, one at a time.
+//! dataflows a coordinator sends it, one at a time, and keeps the binaries
+//! they're deployed with in its store (see `store`).
 //!
-//! It listens on TCP for coordinators and for data from other daemons (see
-//! `wire`). Nothing is authenticated: anyone who can reach the port can run
-//! programs on this machine, so it listens on localhost unless told
-//! otherwise.
+//! It listens on TCP for coordinators, for data from other daemons, and for
+//! binaries (see `wire`). Nothing is authenticated: anyone who can reach the
+//! port can run programs on this machine, so it listens on localhost unless
+//! told otherwise.
 
+use std::collections::BTreeMap;
 use std::io::{self, BufReader, Read};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::UnixListener;
@@ -13,15 +15,19 @@ use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use keel::trace;
+
 use crate::control::{self, Reply, Request, Status};
+use crate::packaging;
 use crate::runtime::{RuntimeDir, SessionFiles};
 use crate::session::{Session, SessionConfig};
 use crate::signals;
-use crate::wire::{self, Event, ToDaemon};
-use keel::trace;
+use crate::store::Store;
+use crate::wire::{self, BlobHeader, Event, ToDaemon};
 
 struct Daemon {
     runtime_dir: PathBuf,
+    store: Store,
     /// The dataflow being run, if any.
     session: Mutex<Option<Arc<Session>>>,
 }
@@ -34,7 +40,9 @@ pub fn serve(listen: &str) -> io::Result<()> {
     let control_listener = UnixListener::bind(runtime.control_socket())?;
     signals::install();
 
-    let daemon = Arc::new(Daemon { runtime_dir: runtime.dir.clone(), session: Mutex::new(None) });
+    let store = Store::open()?;
+    let (blobs, bytes) = store.usage();
+    let daemon = Arc::new(Daemon { runtime_dir: runtime.dir.clone(), store, session: Mutex::new(None) });
     {
         let daemon = daemon.clone();
         control::serve(control_listener, move |request| match daemon.current() {
@@ -43,10 +51,12 @@ pub fn serve(listen: &str) -> io::Result<()> {
         });
     }
     eprintln!(
-        "[daemon] pid {}, listening on {}, control socket {}",
+        "[daemon] pid {}, listening on {}, control socket {}, store {} ({blobs} binaries, {} MiB)",
         std::process::id(),
         listener.local_addr()?,
-        runtime.control_socket().display()
+        runtime.control_socket().display(),
+        daemon.store.dir().display(),
+        bytes >> 20,
     );
     {
         let daemon = daemon.clone();
@@ -110,79 +120,150 @@ impl Daemon {
                 Some(session) => session.serve_peer(stream),
                 None => eprintln!("[daemon] another machine sent data, but no dataflow is running"),
             },
+            wire::BLOB => {
+                if let Err(e) = self.receive_blob(stream) {
+                    eprintln!("[daemon] receiving a binary failed: {e}");
+                }
+            }
             _ => {}
         }
     }
 
-    /// Runs the dataflow a coordinator sends, relaying events both ways.
+    /// Stores one binary, checked against its hash.
+    fn receive_blob(&self, stream: TcpStream) -> io::Result<()> {
+        let mut writer = stream.try_clone()?;
+        let mut reader = BufReader::new(stream);
+        let Some(BlobHeader { hash, len }) = wire::read_json(&mut reader)? else { return Ok(()) };
+        let answer = match self.store.put(&hash, &mut reader, len) {
+            Ok(()) => {
+                eprintln!("[daemon] stored {hash} ({} KiB)", len >> 10);
+                Event::Done
+            }
+            Err(e) => Event::Error { message: e.to_string() },
+        };
+        wire::write_json(&mut writer, &answer)
+    }
+
+    /// Answers deployment requests, and runs the dataflow a coordinator
+    /// sends, relaying events both ways.
     fn serve_coordinator(self: &Arc<Self>, stream: TcpStream) -> io::Result<()> {
         let writer = Arc::new(Mutex::new(stream.try_clone()?));
         let send = |event: &Event| wire::write_json(&mut *writer.lock().unwrap(), event);
         let mut reader = BufReader::new(stream);
-        let Some(ToDaemon::Spawn { name, machine, dataflow, base_dir }) = wire::read_json(&mut reader)? else {
-            return send(&Event::Error { message: "expected `spawn` first".into() });
-        };
-
-        let (events_tx, events) = mpsc::channel();
-        let session = {
-            let mut current = self.session.lock().unwrap();
-            if current.is_some() {
-                return send(&Event::Error { message: "this daemon is already running a dataflow".into() });
-            }
-            let config = SessionConfig { name: name.clone(), machine: Some(machine.clone()), dataflow, base_dir };
-            let launched =
-                SessionFiles::create(&self.runtime_dir).and_then(|files| Session::launch(config, files, events_tx));
-            match launched {
-                Ok(session) => current.insert(session).clone(),
-                Err(e) => return send(&Event::Error { message: e.to_string() }),
-            }
-        };
-        eprintln!("[daemon] running {} as machine `{machine}`", name.display());
-
-        {
-            let (daemon, writer) = (self.clone(), writer.clone());
-            std::thread::spawn(move || {
-                for event in events {
-                    let finished = matches!(event, Event::Finished { .. });
-                    let _ = wire::write_json(&mut *writer.lock().unwrap(), &event);
-                    if finished {
-                        *daemon.session.lock().unwrap() = None;
-                        eprintln!("[daemon] dataflow finished, waiting for the next one");
-                        return;
+        let mut session: Option<Arc<Session>> = None;
+        while let Ok(Some(request)) = wire::read_json(&mut reader) {
+            let request = match request {
+                ToDaemon::Spawn { name, machine, dataflow, base_dir, binaries } => {
+                    match self.spawn(name, machine, dataflow, base_dir, binaries, writer.clone()) {
+                        Ok(spawned) => session = Some(spawned),
+                        Err(e) => send(&Event::Error { message: e.to_string() })?,
                     }
+                    continue;
                 }
-            });
-        }
-
-        loop {
-            match wire::read_json(&mut reader) {
-                Ok(Some(ToDaemon::Start)) => {
+                ToDaemon::Hello => {
+                    let (blobs, bytes) = self.store.usage();
+                    send(&Event::Hello { target: packaging::host_target(), blobs, bytes })?;
+                    continue;
+                }
+                ToDaemon::Missing { hashes } => {
+                    match self.store.missing(&hashes) {
+                        Ok(hashes) => send(&Event::Missing { hashes })?,
+                        Err(e) => send(&Event::Error { message: e.to_string() })?,
+                    }
+                    continue;
+                }
+                ToDaemon::Pin { id, hashes } => {
+                    match self.store.pin(&id, &hashes) {
+                        Ok(()) => send(&Event::Done)?,
+                        Err(e) => send(&Event::Error { message: e.to_string() })?,
+                    }
+                    continue;
+                }
+                ToDaemon::Unpin { ids } => {
+                    let collected = ids.iter().try_for_each(|id| self.store.unpin(id)).and_then(|()| self.store.gc());
+                    match collected {
+                        Ok((blobs, bytes)) => {
+                            eprintln!("[daemon] gc: removed {blobs} binaries, {} KiB", bytes >> 10);
+                            send(&Event::Collected { blobs, bytes })?
+                        }
+                        Err(e) => send(&Event::Error { message: e.to_string() })?,
+                    }
+                    continue;
+                }
+                request => request,
+            };
+            let Some(session) = &session else {
+                send(&Event::Error { message: "no dataflow spawned on this connection".into() })?;
+                continue;
+            };
+            match request {
+                ToDaemon::Start => {
                     if let Err(e) = session.start() {
                         send(&Event::Error { message: e.to_string() })?;
                         session.abort();
                     }
                 }
-                Ok(Some(ToDaemon::Stop)) => session.stop(),
-                Ok(Some(ToDaemon::Abort)) => session.abort(),
-                Ok(Some(ToDaemon::Ping { t1 })) => {
+                ToDaemon::Stop => session.stop(),
+                ToDaemon::Abort => session.abort(),
+                ToDaemon::Ping { t1 } => {
                     let t2 = trace::now_ns();
                     send(&Event::Pong { t1, t2, t3: trace::now_ns() })?;
                 }
-                Ok(Some(ToDaemon::Clocks { clocks })) => session.set_clocks(clocks),
-                Ok(Some(ToDaemon::Control { id, request })) => {
+                ToDaemon::Clocks { clocks } => session.set_clocks(clocks),
+                ToDaemon::Control { id, request } => {
                     send(&Event::Control { id, reply: session.handle(request) })?;
                 }
-                Ok(Some(ToDaemon::Spawn { .. })) => {
-                    send(&Event::Error { message: "already running a dataflow".into() })?;
-                }
-                Ok(None) | Err(_) => {
-                    if !session.is_closed() {
-                        session.log("daemon", "lost the coordinator, aborting".into());
-                        session.abort();
-                    }
-                    return Ok(());
-                }
+                _ => unreachable!("handled above"),
             }
         }
+        if let Some(session) = session.filter(|s| !s.is_closed()) {
+            session.log("daemon", "lost the coordinator, aborting".into());
+            session.abort();
+        }
+        Ok(())
+    }
+
+    fn spawn(
+        self: &Arc<Self>,
+        name: PathBuf,
+        machine: String,
+        dataflow: crate::dataflow::Dataflow,
+        base_dir: PathBuf,
+        binaries: BTreeMap<String, String>,
+        writer: Arc<Mutex<TcpStream>>,
+    ) -> io::Result<Arc<Session>> {
+        let mut executables = BTreeMap::new();
+        for (node, hash) in binaries {
+            let path = self.store.blob(&hash)?;
+            if !path.exists() {
+                return Err(io::Error::other(format!("`{node}`'s binary {hash} isn't in this machine's store")));
+            }
+            executables.insert(node, path);
+        }
+        let (events_tx, events) = mpsc::channel();
+        let session = {
+            let mut current = self.session.lock().unwrap();
+            if current.is_some() {
+                return Err(io::Error::other("this daemon is already running a dataflow"));
+            }
+            let config =
+                SessionConfig { name: name.clone(), machine: Some(machine.clone()), dataflow, base_dir, executables };
+            let files = SessionFiles::create(&self.runtime_dir)?;
+            current.insert(Session::launch(config, files, events_tx)?).clone()
+        };
+        eprintln!("[daemon] running {} as machine `{machine}`", name.display());
+        let daemon = self.clone();
+        std::thread::spawn(move || {
+            for event in events {
+                let finished = matches!(event, Event::Finished { .. });
+                let _ = wire::write_json(&mut *writer.lock().unwrap(), &event);
+                if finished {
+                    *daemon.session.lock().unwrap() = None;
+                    eprintln!("[daemon] dataflow finished, waiting for the next one");
+                    return;
+                }
+            }
+        });
+        Ok(session)
     }
 }

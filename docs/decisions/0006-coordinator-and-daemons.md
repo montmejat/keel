@@ -32,7 +32,8 @@ and something on each machine has to run it.
   their share. That's fine for a learning project; noted, not solved.
 - Binaries must already exist on each machine at the same path as on the
   coordinator's (node paths resolve against the dataflow's directory). That's
-  what milestone 5 (packaging, deployment) replaces. Today, containers mount
+  what packaging and deployment replace ([0016](0016-packaging-and-deployment.md),
+  for `build:` nodes). The containers example still mounts
   the repository at the same path.
 - **No authentication.** Anyone who can reach a daemon's port can make it
   run any program. Daemons listen on `127.0.0.1` unless told otherwise, and

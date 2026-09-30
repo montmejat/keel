@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{self, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -57,9 +57,12 @@ struct ClockSamples {
     best: Option<Clock>,
 }
 
-pub(crate) fn run(path: &Path, dataflow: Dataflow) -> io::Result<bool> {
-    let name = std::fs::canonicalize(path)?;
-    let base_dir = name.parent().unwrap().to_owned();
+pub(crate) fn run(
+    name: PathBuf,
+    dataflow: Dataflow,
+    base_dir: PathBuf,
+    binaries: BTreeMap<String, String>,
+) -> io::Result<bool> {
     let runtime = RuntimeDir::create()?;
     let control_listener = UnixListener::bind(runtime.control_socket())?;
     signals::install();
@@ -79,11 +82,18 @@ pub(crate) fn run(path: &Path, dataflow: Dataflow) -> io::Result<bool> {
     // when its connection closes.
     let (events_tx, events) = mpsc::channel::<(String, Option<Event>)>();
     for (machine, address) in &dataflow.machines {
+        let on_machine =
+            |node: &String| dataflow.nodes.iter().any(|n| &n.id == node && n.machine.as_ref() == Some(machine));
         let spawn = ToDaemon::Spawn {
             name: name.clone(),
             machine: machine.clone(),
             dataflow: dataflow.clone(),
             base_dir: base_dir.clone(),
+            binaries: binaries
+                .iter()
+                .filter(|(node, _)| on_machine(node))
+                .map(|(n, h)| (n.clone(), h.clone()))
+                .collect(),
         };
         let stream = connect(address).and_then(|mut stream| {
             stream.write_all(&[wire::COORDINATOR])?;
@@ -324,7 +334,7 @@ impl Coordinator {
     }
 
     fn log(&self, node: &str, text: String) {
-        println!("[{node}] {text}");
+        let _ = writeln!(io::stdout(), "[{node}] {text}");
         let mut logs = self.logs.lock().unwrap();
         if logs.0.len() == LOG_CAPACITY {
             logs.0.pop_front();
@@ -335,7 +345,7 @@ impl Coordinator {
     }
 
     fn say(&self, text: String) {
-        eprintln!("[coordinator] {text}");
+        let _ = writeln!(io::stderr(), "[coordinator] {text}");
         let mut logs = self.logs.lock().unwrap();
         let line =
             LogLine { seq: logs.1, t_ms: self.start.elapsed().as_millis() as u64, node: "coordinator".into(), text };

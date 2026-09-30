@@ -1,8 +1,10 @@
 //! keel-daemon: runs dataflows.
 //!
-//! - [`run`] runs a dataflow file. When everything is on this machine, it
-//!   runs it in-process. When the dataflow lists machines, it acts as the
+//! - [`run`] runs a dataflow file, deploying it first if it has nodes to
+//!   build (see [`packaging`]). When everything is on this machine, it runs
+//!   in-process. When the dataflow lists machines, it acts as the
 //!   coordinator of the `keel daemon`s running there.
+//! - [`start`] runs a recorded deployment again, e.g. after a rollback.
 //! - [`serve`] is `keel daemon`: waits for a coordinator and runs this
 //!   machine's share of its dataflow.
 //!
@@ -12,46 +14,78 @@ pub mod control;
 mod coordinator;
 mod daemon;
 pub mod dataflow;
+pub mod packaging;
 pub mod runtime;
 mod session;
+mod sha256;
 mod signals;
+pub mod store;
 mod tracing;
 pub mod wire;
 
+use std::collections::BTreeMap;
 use std::io;
 use std::os::unix::net::UnixListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
 pub use daemon::serve;
 use dataflow::Dataflow;
+use packaging::Deployment;
 use runtime::{RuntimeDir, SessionFiles};
 use session::{Session, SessionConfig};
+use store::Store;
 use wire::Event;
 
-/// Runs the dataflow at `path` until every node has exited. Returns whether
-/// all of them succeeded.
+/// Runs the dataflow at `path` until every node has exited, deploying it
+/// first if it has `build:` nodes. Returns whether all nodes succeeded.
 pub fn run(path: &Path) -> io::Result<bool> {
     let dataflow = Dataflow::load(path)?;
     dataflow.resolve()?;
+    if dataflow.nodes.iter().any(|n| n.build.is_some()) {
+        return start(&packaging::deploy(path)?);
+    }
+    let name = std::fs::canonicalize(path)?;
+    let base_dir = name.parent().unwrap().to_owned();
+    run_dataflow(name, dataflow, base_dir, BTreeMap::new())
+}
+
+/// Runs a deployment: built nodes run their binary from the store.
+pub fn start(deployment: &Deployment) -> io::Result<bool> {
+    let (name, dataflow) = (deployment.source.clone(), deployment.dataflow.clone());
+    run_dataflow(name, dataflow, deployment.base_dir.clone(), deployment.binaries.clone())
+}
+
+fn run_dataflow(
+    name: PathBuf,
+    dataflow: Dataflow,
+    base_dir: PathBuf,
+    binaries: BTreeMap<String, String>,
+) -> io::Result<bool> {
     if dataflow.machines.is_empty() {
-        run_local(path, dataflow)
+        let store = Store::open()?;
+        let executables =
+            (binaries.iter()).map(|(node, hash)| Ok((node.clone(), store.blob(hash)?))).collect::<io::Result<_>>()?;
+        run_local(name, dataflow, base_dir, executables)
     } else {
-        coordinator::run(path, dataflow)
+        coordinator::run(name, dataflow, base_dir, binaries)
     }
 }
 
 /// Plays both roles in one process: coordinator and the only daemon.
-fn run_local(path: &Path, dataflow: Dataflow) -> io::Result<bool> {
+fn run_local(
+    name: PathBuf,
+    dataflow: Dataflow,
+    base_dir: PathBuf,
+    executables: BTreeMap<String, PathBuf>,
+) -> io::Result<bool> {
     let runtime = RuntimeDir::create()?;
     let control_listener = UnixListener::bind(runtime.control_socket())?;
     signals::install();
 
-    let name = std::fs::canonicalize(path)?;
-    let base_dir = name.parent().unwrap().to_owned();
     let (events_tx, events) = mpsc::channel();
-    let config = SessionConfig { name, machine: None, dataflow, base_dir };
+    let config = SessionConfig { name, machine: None, dataflow, base_dir, executables };
     let session = Session::launch(config, SessionFiles::create(&runtime.dir)?, events_tx)?;
     {
         let session = session.clone();

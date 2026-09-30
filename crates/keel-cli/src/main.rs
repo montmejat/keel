@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use keel_daemon::control::{Client, LogLine, NodeState};
+use keel_daemon::packaging::{self, Registry};
 use keel_daemon::{runtime, wire};
 
 #[derive(Parser)]
@@ -25,8 +26,23 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run a dataflow in the foreground: on this machine, or across the
-    /// machines it lists
+    /// machines it lists. Deploys it first if it has nodes to build
     Run { dataflow: PathBuf },
+    /// Build a dataflow's nodes for their machines and ship them, without
+    /// running it
+    Deploy { dataflow: PathBuf },
+    /// Run a deployment: a dataflow name's current one, or one by id
+    Start { deployment: String },
+    /// List the deployments made from this machine
+    History { name: Option<String> },
+    /// Make the deployment before the current one (or the given one) current
+    Rollback { name: String, id: Option<String> },
+    /// Forget old deployments, and delete binaries no deployment uses
+    Gc {
+        /// Deployments to keep per dataflow name, besides the current one
+        #[arg(long, default_value_t = packaging::DEFAULT_KEEP)]
+        keep: usize,
+    },
     /// Run this machine's daemon, which multi-machine dataflows run on
     Daemon {
         /// Address to listen on. Anyone who can reach it can run programs on
@@ -86,6 +102,19 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             let ok = keel_daemon::run(&dataflow)?;
             return Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE });
         }
+        Command::Deploy { dataflow } => {
+            packaging::deploy(&dataflow)?;
+        }
+        Command::Start { deployment } => {
+            let ok = keel_daemon::start(&Registry::open()?.find(&deployment)?)?;
+            return Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE });
+        }
+        Command::History { name } => history(name.as_deref())?,
+        Command::Rollback { name, id } => {
+            let d = Registry::open()?.rollback(&name, id.as_deref())?;
+            println!("`{name}` is now {} ({}); `keel start {name}` runs it", d.id, fmt::age(d.created));
+        }
+        Command::Gc { keep } => packaging::gc(keep)?,
         Command::Daemon { listen } => keel_daemon::serve(&listen)?,
         Command::Ps => ps()?,
         Command::Top { pid } => top::run(pick(pid)?)?,
@@ -142,6 +171,32 @@ fn ps() -> Result<(), Box<dyn Error>> {
             status.machine.as_deref().unwrap_or(if status.coordinator { "(all)" } else { "-" }),
             status.dataflow.as_ref().map_or("-".into(), |d| d.display().to_string())
         );
+    }
+    Ok(())
+}
+
+fn history(name: Option<&str>) -> Result<(), Box<dyn Error>> {
+    let registry = Registry::open()?;
+    let names = match name {
+        Some(name) => vec![name.to_owned()],
+        None => registry.names(),
+    };
+    println!("  {:<16} {:<13} {:>9}  {:>5}  {:<24} RUSTC", "NAME", "ID", "DEPLOYED", "BUILT", "MACHINES");
+    for name in names {
+        let current = registry.current(&name).ok().map(|d| d.id);
+        for d in registry.history(&name)? {
+            let machines: Vec<&str> = d.dataflow.machines.keys().map(String::as_str).collect();
+            println!(
+                "{} {:<16} {:<13} {:>9}  {:>5}  {:<24} {}",
+                if current.as_ref() == Some(&d.id) { "*" } else { " " },
+                d.name,
+                d.id,
+                fmt::age(d.created),
+                d.binaries.len(),
+                if machines.is_empty() { "(this one)".into() } else { machines.join(", ") },
+                d.rustc.strip_prefix("rustc ").unwrap_or(&d.rustc).split(' ').next().unwrap_or(""),
+            );
+        }
     }
     Ok(())
 }

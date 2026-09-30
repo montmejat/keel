@@ -1,7 +1,8 @@
 # The camera pipeline split over two machines. Start a daemon for each first:
 #   keel daemon --listen 127.0.0.1:7401     # "robot"
 #   keel daemon --listen 127.0.0.1:7402     # "base"
-# Frames cross from robot to base, brightness reports come back.
+# Frames cross from robot to base, brightness reports come back. keel builds
+# the nodes for each machine and ships them to its daemon (`keel history`).
 machines:
   robot: 127.0.0.1:7401
   base: 127.0.0.1:7402
@@ -9,16 +10,16 @@ machines:
 nodes:
   - id: camera
     machine: robot
-    path: ../target/debug/camera
+    build: camera
 
   - id: detector
     machine: base
-    path: ../target/debug/detector
+    build: detector
     inputs:
       frames: camera/frames
 
   - id: recorder
     machine: robot
-    path: ../target/debug/recorder
+    build: recorder
     inputs:
       brightness: detector/brightness

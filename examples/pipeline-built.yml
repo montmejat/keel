@@ -1,0 +1,15 @@
+# The camera pipeline, deployed: keel builds each node for its machine, ships
+# it by hash, and records the deployment (`keel history`, `keel rollback`).
+nodes:
+  - id: camera
+    build: camera
+
+  - id: detector
+    build: detector
+    inputs:
+      frames: camera/frames
+
+  - id: recorder
+    build: recorder
+    inputs:
+      brightness: detector/brightness

@@ -21,3 +21,4 @@ Superseded records stay, with a link to what replaced them.
 | [0013](0013-data-between-machines.md) | Data between machines: TCP to the peer daemon, into its shared memory | Proposed |
 | [0014](0014-tracing-and-clocks.md) | Tracing: timestamps at every hop, clocks aligned by keel | Accepted |
 | [0015](0015-realtime-data-plane.md) | Real-time data plane: nodes talk directly, the daemon only sets up | Proposed |
+| [0016](0016-packaging-and-deployment.md) | Packaging and deployment: reproducible static binaries, stored by hash | Proposed |

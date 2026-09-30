@@ -25,8 +25,14 @@ pub struct NodeConfig {
     /// Where the node runs: a key of `Dataflow::machines`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
-    /// Executable, relative to the dataflow file.
-    pub path: PathBuf,
+    /// An executable, relative to the dataflow file, that must already be
+    /// there on the node's machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    /// Or a binary of the dataflow's cargo workspace, which `keel` builds for
+    /// the node's machine and ships to it (see `packaging`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
     /// `input_id: source_node/output_id`, or `input_id: { source: ..., keep: latest }`
     #[serde(default)]
     pub inputs: BTreeMap<String, Input>,
@@ -121,6 +127,9 @@ impl Dataflow {
             return Err(io::Error::other(format!("node id `{bad}` may only contain letters, digits, `_` and `-`")));
         }
         for node in &self.nodes {
+            if node.path.is_some() == node.build.is_some() {
+                return Err(io::Error::other(format!("node `{}` needs either `path:` or `build:`", node.id)));
+            }
             match &node.machine {
                 None if self.machines.is_empty() => {}
                 Some(m) if self.machines.contains_key(m) => {}
@@ -255,6 +264,8 @@ mod tests {
         let bad_input = "nodes: [{ id: a, path: a }, { id: b, path: b, inputs: { 'x y': a/out } }]";
         let bad_priority = "nodes: [{ id: a, path: a, rt: { priority: 100 } }]";
         let bad_keep = "nodes: [{ id: a, path: a }, { id: b, path: b, inputs: { x: { source: a/out, keep: some } } }]";
+        let path_and_build = "nodes: [{ id: a, path: a, build: a }]";
+        let neither = "nodes: [{ id: a }]";
         for yaml in [
             duplicate,
             unknown_node,
@@ -267,6 +278,8 @@ mod tests {
             bad_input,
             bad_priority,
             bad_keep,
+            path_and_build,
+            neither,
         ] {
             assert!(resolve(yaml).is_err(), "accepted: {yaml}");
         }

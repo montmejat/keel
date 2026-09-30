@@ -18,7 +18,9 @@ Write by hand whatever *is* the middleware:
 Use established crates for the generic building blocks:
 - parsing (serde, a YAML parser),
 - system call bindings (`libc`),
-- hashing and compression for bundles (e.g. `sha2`, `tar`, `zstd`),
+- compression, if bundles ever need it (e.g. `zstd`). Hashing was meant to
+  be `sha2` too, but SHA-256 ended up written by hand
+  ([0016](0016-packaging-and-deployment.md)).
 - TUI rendering (`ratatui`),
 - and later, if needed, async I/O and SSH.
 

@@ -40,13 +40,32 @@ In another terminal:
 
 List machines in the dataflow and place each node on one
 (`examples/pipeline-two-machines.yml`), start a daemon per machine, then run
-it from anywhere:
+it from the machine with the sources. keel builds each node for its
+machine's architecture and ships it (see below):
 
 ```sh
 ./target/debug/keel daemon --listen 127.0.0.1:7401 &    # "robot"
 ./target/debug/keel daemon --listen 127.0.0.1:7402 &    # "base"
 ./target/debug/keel run examples/pipeline-two-machines.yml
 ```
+
+### Deployments
+
+A node with `build: <cargo binary>` instead of `path:` is built by keel, as
+a reproducible static binary for its machine (x86_64 or aarch64), and sent
+to that machine's daemon by SHA-256, only if it doesn't have it already.
+Each deployment is recorded:
+
+```sh
+keel deploy examples/pipeline-two-machines.yml   # build and ship, don't run
+keel history                                     # * marks the current one
+keel rollback pipeline-two-machines              # back to the previous one
+keel start pipeline-two-machines                 # run the current one
+keel gc --keep 3                                 # forget older ones, delete unused binaries
+```
+
+Cross-building needs the target: `rustup target add aarch64-unknown-linux-musl`
+(and `x86_64-unknown-linux-musl`).
 
 Or with each machine in its own container (Podman):
 `examples/containers/run.sh`. Daemons have no authentication: anyone who

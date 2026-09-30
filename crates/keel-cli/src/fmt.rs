@@ -12,6 +12,12 @@ pub fn duration(d: Duration) -> String {
     }
 }
 
+/// How long ago a Unix time was: `42s ago`, `3m07s ago`
+pub fn age(unix_secs: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    format!("{} ago", duration(Duration::from_secs(now.saturating_sub(unix_secs))))
+}
+
 /// Time since the daemon started: `+12.345s`
 pub fn timestamp(t_ms: u64) -> String {
     format!("+{}.{:03}s", t_ms / 1000, t_ms % 1000)

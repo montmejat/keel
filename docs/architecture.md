@@ -73,6 +73,9 @@ keel leans on the kernel and on Linux conventions instead of reinventing them:
 | Real-time nodes | `SCHED_FIFO`, `sched_setaffinity`, `mlockall`, `PR_SET_TIMERSLACK` |
 | Periodic loops | `clock_nanosleep(TIMER_ABSTIME)` |
 | Timestamps | `clock_gettime(CLOCK_MONOTONIC)`, a vDSO call (~20 ns) |
+| Binaries that run anywhere | Static musl builds, linked by `rust-lld` |
+| Naming software | SHA-256 of the binary |
+| Switching versions atomically | A symlink replaced with `rename(2)` |
 | Trace data out of the nodes | Lock-free rings and counters in `/dev/shm` files |
 | Aligning machines' clocks | NTP's four-timestamp exchange, over the coordinator's own connection |
 
@@ -101,7 +104,7 @@ overlaps with systemd.
    in shared memory, futex wake-ups), no allocation per message, SCHED_FIFO
    and CPU pinning from the dataflow, per-input policies (block, or keep the
    latest), a periodic-loop helper. Tried on a PREEMPT_RT kernel on the Pi.
-7. **Packaging and deployment**: reproducible static builds, a store keyed
+7. **Packaging and deployment** (done): reproducible static builds, a store keyed
    by hash on each daemon, `keel deploy | rollback | history | gc`. Replaces
    copying binaries to the same path on every machine.
 8. **Recording and replay**: a recorder node, a file format that names the

@@ -63,8 +63,10 @@ pub(crate) struct SessionConfig {
     /// `None` when the whole dataflow runs here.
     pub machine: Option<String>,
     pub dataflow: Dataflow,
-    /// Node paths are relative to this.
+    /// `path:` nodes are relative to this.
     pub base_dir: PathBuf,
+    /// What `build:` nodes run: their binary in the store.
+    pub executables: BTreeMap<String, PathBuf>,
 }
 
 pub(crate) struct Session {
@@ -140,7 +142,9 @@ struct NodeInfo {
 
 impl State {
     fn log(&mut self, node: &str, text: String) {
-        eprintln!("[{node}] {text}");
+        // Never panic here, under the session's lock: a closed stderr (the
+        // terminal gone, a pipe's reader exited) must not take the session down.
+        let _ = writeln!(io::stderr(), "[{node}] {text}");
         if self.logs.len() == LOG_CAPACITY {
             self.logs.pop_front();
         }
@@ -315,7 +319,8 @@ impl Session {
         {
             let session = session.clone();
             std::thread::spawn(move || {
-                let (children, output_threads) = match session.spawn_all(&local_nodes, &config.base_dir) {
+                let spawned = session.spawn_all(&local_nodes, &config.base_dir, &config.executables);
+                let (children, output_threads) = match spawned {
                     Ok(spawned) => spawned,
                     Err(e) => {
                         session.cleanup();
@@ -471,7 +476,12 @@ impl Session {
 
     /// Starts each node in its own process group, with its output captured
     /// and its real-time settings applied.
-    fn spawn_all(self: &Arc<Self>, nodes: &[NodeConfig], base_dir: &Path) -> io::Result<Spawned> {
+    fn spawn_all(
+        self: &Arc<Self>,
+        nodes: &[NodeConfig],
+        base_dir: &Path,
+        executables: &BTreeMap<String, PathBuf>,
+    ) -> io::Result<Spawned> {
         let (nodes_socket, shm_dir) = {
             let files = self.files.lock().unwrap();
             let files = files.as_ref().unwrap();
@@ -480,7 +490,14 @@ impl Session {
         let mut children: Vec<(String, Child)> = Vec::new();
         let mut output_threads = Vec::new();
         for node in nodes {
-            let exe = base_dir.join(&node.path);
+            let exe = match (&node.path, executables.get(&node.id)) {
+                (_, Some(exe)) => exe.clone(),
+                (Some(path), None) => base_dir.join(path),
+                (None, None) => {
+                    self.kill_all(&mut children);
+                    return Err(io::Error::other(format!("`{}` is a `build:` node but wasn't deployed", node.id)));
+                }
+            };
             let mut command = Command::new(&exe);
             command
                 .env(ENV_NODE_ID, &node.id)

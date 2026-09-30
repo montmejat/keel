@@ -7,3 +7,11 @@ exclude = ["examples/containers"]
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
+
+# A supervisor that panics should die, taking its nodes with it (they get
+# SIGKILL when it exits), rather than hang with some of its threads gone.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
