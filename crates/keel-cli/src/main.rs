@@ -2,6 +2,7 @@
 //!
 //! Every command except `run` is a client of a daemon's control API.
 
+mod fleet;
 mod fmt;
 mod recording;
 mod top;
@@ -62,6 +63,11 @@ enum Command {
     /// What differs between two deployments: each a name, `name@branch`, or
     /// an id
     Diff { from: String, to: String },
+    /// Several robots running one dataflow, from a fleet file
+    Fleet {
+        #[command(subcommand)]
+        command: FleetCommand,
+    },
     /// Forget old deployments, and delete binaries no deployment uses
     Gc {
         /// Deployments to keep per dataflow name, besides the current one
@@ -168,6 +174,32 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum FleetCommand {
+    /// Deploy to every robot and run them all, until stopped
+    Run {
+        fleet: PathBuf,
+        /// Only this robot; repeatable
+        #[arg(long)]
+        only: Vec<String>,
+    },
+    /// What each robot runs, and how it's doing
+    Status { fleet: PathBuf },
+    /// Roll the dataflow as it is now into the running robots, one after the
+    /// other; `--only` to try it on some first
+    Update {
+        fleet: PathBuf,
+        #[arg(long)]
+        only: Vec<String>,
+    },
+    /// Put robots back on their previous deployment, running or not
+    Rollback {
+        fleet: PathBuf,
+        #[arg(long)]
+        only: Vec<String>,
+    },
+}
+
 fn main() -> ExitCode {
     // Booted from a `keel image`: we're the machine's first process.
     if std::process::id() == 1 {
@@ -211,6 +243,15 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             }
         }
         Command::Diff { from, to } => diff(&from, &to)?,
+        Command::Fleet { command } => match command {
+            FleetCommand::Run { fleet, only } => {
+                let ok = fleet::run(&fleet, &only)?;
+                return Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE });
+            }
+            FleetCommand::Status { fleet } => fleet::status(&fleet)?,
+            FleetCommand::Update { fleet, only } => fleet::update(&fleet, &only)?,
+            FleetCommand::Rollback { fleet, only } => fleet::rollback(&fleet, &only)?,
+        },
         Command::Gc { keep } => packaging::gc(keep)?,
         Command::Recording { file } => recording::info(&file)?,
         Command::Replay { recording, dataflow, speed } => {

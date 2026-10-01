@@ -1,0 +1,13 @@
+# Three robots running the camera pipeline, each a machine whose only program
+# is keel (`examples/image/boot.sh 3` boots them in QEMU):
+#
+#   keel fleet run examples/fleet.yml                      # deploy to all, run them
+#   keel fleet status examples/fleet.yml
+#   keel fleet update examples/fleet.yml --only robot-3    # new code on one robot first
+#   keel fleet update examples/fleet.yml                   # then on the others
+#   keel fleet rollback examples/fleet.yml --only robot-3  # or back
+dataflow: pipeline-image.yml
+robots:
+  robot-1: { robot: 127.0.0.1:7411 }
+  robot-2: { robot: 127.0.0.1:7412 }
+  robot-3: { robot: 127.0.0.1:7413 }

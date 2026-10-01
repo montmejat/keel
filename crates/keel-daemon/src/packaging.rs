@@ -68,9 +68,15 @@ pub fn host_target() -> String {
 pub fn deploy(path: &Path) -> io::Result<Deployment> {
     let source = fs::canonicalize(path)?;
     let dataflow = Dataflow::load(&source)?;
+    let name = source.file_stem().unwrap().to_string_lossy().into_owned();
+    deploy_as(name, source, dataflow)
+}
+
+/// Deploys `dataflow`, read from `source` and maybe changed since (a fleet
+/// puts each robot's addresses in it), recording it under `name`.
+pub fn deploy_as(name: String, source: PathBuf, dataflow: Dataflow) -> io::Result<Deployment> {
     dataflow.resolve()?;
     let base_dir = source.parent().unwrap().to_owned();
-    let name = source.file_stem().unwrap().to_string_lossy().into_owned();
 
     // Which target each built node needs: its machine's, or ours.
     let mut remotes: BTreeMap<String, (Remote, String)> = BTreeMap::new();
@@ -109,7 +115,10 @@ pub fn deploy(path: &Path) -> io::Result<Deployment> {
         }
     }
 
-    let id = sha256::hash(serde_json::to_string(&(&dataflow, &binaries, &base_dir))?.as_bytes())[..12].to_owned();
+    // The name is part of it: the same dataflow deployed under two names (a
+    // fleet's robot, and by hand) is two deployments, each with its history.
+    let id =
+        sha256::hash(serde_json::to_string(&(&name, &dataflow, &binaries, &base_dir))?.as_bytes())[..12].to_owned();
     let hashes_on = |machine: Option<&String>| -> Vec<String> {
         let nodes = dataflow.nodes.iter().filter(|n| n.machine.as_ref() == machine);
         let mut hashes: Vec<String> = nodes.filter_map(|n| binaries.get(&n.id).cloned()).collect();

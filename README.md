@@ -1,7 +1,7 @@
 <h1 align="center">keel</h1>
 
 <p align="center">
-  <b>A whole robotics middleware stack in about 7,000 lines of Rust.</b><br>
+  <b>A whole robotics middleware stack in about 8,000 lines of Rust.</b><br>
   Zero-copy transport, real time, deployment, tracing and recording, built on what Linux already ships.
 </p>
 
@@ -36,6 +36,7 @@ From a bare machine up:
 | Runtime | `keel run` · `keel stop` · `keel update` · `restart:` · `rt:` |
 | Transport | `node.send_with()` · `node.next_event()` |
 | Observability | `keel top` · `keel trace` · `keel replay` |
+| Fleet | `keel fleet run` · `keel fleet status` · `keel fleet update --only robot-3` |
 | Control | `keel-pid` · `keel-sim` · `keel-can` |
 
 ## Try it
@@ -126,6 +127,28 @@ keel merge pipeline-two-machines planner         # main takes what planner has
 
 Cross-building needs the target: `rustup target add aarch64-unknown-linux-musl`
 (and `x86_64-unknown-linux-musl`).
+
+### A fleet
+
+Several robots running one dataflow, listed in a fleet file with each
+robot's addresses (`examples/fleet.yml`: three QEMU machines). New code goes
+to one robot first, then to the others, without stopping any:
+
+```sh
+examples/image/boot.sh 3
+keel fleet run examples/fleet.yml                       # deploy to all, run them
+keel fleet update examples/fleet.yml --only robot-3     # after changing a node
+keel fleet status examples/fleet.yml
+keel fleet update examples/fleet.yml                    # the others
+keel fleet rollback examples/fleet.yml --only robot-2   # or back
+```
+
+```
+ROBOT        STATE     CODE      DEPLOYMENT      DEPLOYED  NODES  RESTARTS    LAT p99
+robot-1      running   c99cf132  e301eaccd818     29s ago    3/3         0    204.8µs
+robot-2      running   c99cf132  9079a98083b2     28s ago    3/3         0    221.2µs
+robot-3      running   b05710dd  5bd0660eca87      8s ago    3/3         0    237.6µs
+```
 
 ### Recording and replay
 
@@ -267,17 +290,17 @@ examples/            talker/listener, a camera pipeline, benchmarks, each also
 
 ### Size
 
-Lines of Rust that aren't blank or comments, at milestone 15:
+Lines of Rust that aren't blank or comments, at milestone 16:
 
 | | lines |
 |---|---:|
 | `crates/keel` | 1381 |
-| `crates/keel-daemon` | 3988 |
-| `crates/keel-cli` | 1319 |
+| `crates/keel-daemon` | 4067 |
+| `crates/keel-cli` | 1476 |
 | `crates/keel-record` | 317 |
 | `crates/keel-control` | 392 |
 | `examples/` | 265 |
-| **total** | **7662** |
+| **total** | **7898** |
 
 Direct dependencies: `libc`, `serde`, `serde_json`, `serde_yaml`, and in the
 CLI `clap` and `ratatui`. To count again:

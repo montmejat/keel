@@ -136,6 +136,9 @@ overlaps with systemd.
 15. **keel as process 1** (done): `keel image` builds an initramfs holding
     keel, a network driver and the token; booted by a kernel, keel is the
     machine's only program ([0023](decisions/0023-process-one.md)).
+16. **Fleet** (done): a fleet file lists robots running one dataflow; `keel
+    fleet run | status | update | rollback`, with `--only` to try new code
+    on some robots first ([0024](decisions/0024-fleet.md)).
 
 ## Benchmarks
 

@@ -14,6 +14,7 @@ pub mod control;
 mod coordinator;
 mod daemon;
 pub mod dataflow;
+pub mod fleet;
 pub mod image;
 pub mod init;
 pub mod packaging;
@@ -38,6 +39,9 @@ use dataflow::Dataflow;
 use packaging::Deployment;
 use runtime::{RuntimeDir, SessionFiles};
 use session::{Session, SessionConfig};
+/// SIGINT and SIGTERM are counted instead of killing the process: for a
+/// command that must outlive the Ctrl-C its children also get.
+pub use signals::install as keep_running_on_interrupt;
 use store::Store;
 use wire::Event;
 
