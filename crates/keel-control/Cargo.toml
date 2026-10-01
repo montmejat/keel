@@ -1,0 +1,10 @@
+[package]
+name = "keel-control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Control: joint messages, a PID, a simulated joint, and a CAN bus, as nodes"
+
+[dependencies]
+keel = { path = "../keel" }
+libc = "0.2"

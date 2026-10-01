@@ -1,0 +1,31 @@
+# The controller of control-sim.yml, with the joint behind a CAN bus:
+# `joints` is now the bus master, and `motor` stands in for the drive at the
+# other end of `vcan0`. Needs the interface:
+#
+#   sudo ip link add vcan0 type vcan && sudo ip link set vcan0 up
+#
+# or, without root, everything in its own network namespace:
+#
+#   unshare -rn sh -c 'ip link add vcan0 type vcan && ip link set vcan0 up &&
+#     ./target/debug/keel run examples/control-can.yml'
+#
+# A node that loses the bus (`ip link set vcan0 down`) fails, and is started
+# again until it's back.
+nodes:
+  - id: motor
+    path: ../target/debug/keel-can-motor
+    args: ["--interface", "vcan0"]
+    restart: on-failure
+
+  - id: joints
+    path: ../target/debug/keel-can
+    args: ["--interface", "vcan0"]
+    restart: on-failure
+    inputs:
+      command: { source: controller/command, keep: latest }
+
+  - id: controller
+    path: ../target/debug/keel-pid
+    args: ["--target", "1.0"]
+    inputs:
+      state: { source: joints/state, keep: latest }

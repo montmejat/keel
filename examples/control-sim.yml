@@ -1,0 +1,14 @@
+# A controller holding a simulated joint at 1 rad, at 1 kHz. `keel logs
+# controller` shows it getting there; `keel trace` the state → command time.
+# The same controller drives joints on a CAN bus in control-can.yml.
+nodes:
+  - id: joints
+    path: ../target/debug/keel-sim
+    inputs:
+      command: { source: controller/command, keep: latest }
+
+  - id: controller
+    path: ../target/debug/keel-pid
+    args: ["--target", "1.0"]
+    inputs:
+      state: { source: joints/state, keep: latest }

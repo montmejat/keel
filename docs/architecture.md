@@ -121,6 +121,15 @@ overlaps with systemd.
 11. **Lifecycle polish** (done): restart policies with backoff, a progress
     watchdog, rolling updates of a running dataflow
     ([0019](decisions/0019-lifecycle.md)).
+12. **Branches** (done): a deployed dataflow has named branches; `keel
+    branch | diff | merge` ([0020](decisions/0020-branches.md)). Not yet: a
+    branch running beside the live dataflow, and cloning from another
+    machine.
+13. **Control, first step** (done): `keel-control`, a crate above the node
+    API: joint state and command messages, a PID node, a simulated joint,
+    and joints on a CAN bus, tried on a virtual one
+    ([0021](decisions/0021-control-layer.md)). Not yet: EtherCAT, MuJoCo, a
+    simulated clock.
 
 ## Benchmarks
 

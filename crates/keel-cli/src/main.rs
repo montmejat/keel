@@ -39,12 +39,29 @@ enum Command {
         #[arg(long)]
         pid: Option<u32>,
     },
-    /// Run a deployment: a dataflow name's current one, or one by id
+    /// Run a deployment: a dataflow name's current one, `name@branch`, or
+    /// one by id
     Start { deployment: String },
     /// List the deployments made from this machine
     History { name: Option<String> },
     /// Make the deployment before the current one (or the given one) current
     Rollback { name: String, id: Option<String> },
+    /// A dataflow's branches: list them, or switch to one. Deployments are
+    /// added to the branch that's switched to
+    Branch {
+        name: String,
+        branch: Option<String>,
+        /// Start the branch from the current deployment
+        #[arg(long, requires = "branch")]
+        new: bool,
+        #[arg(long, requires = "branch", conflicts_with = "new")]
+        delete: bool,
+    },
+    /// Bring the current branch of a dataflow up to another of its branches
+    Merge { name: String, branch: String },
+    /// What differs between two deployments: each a name, `name@branch`, or
+    /// an id
+    Diff { from: String, to: String },
     /// Forget old deployments, and delete binaries no deployment uses
     Gc {
         /// Deployments to keep per dataflow name, besides the current one
@@ -167,6 +184,16 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             let d = Registry::open()?.rollback(&name, id.as_deref())?;
             println!("`{name}` is now {} ({}); `keel start {name}` runs it", d.id, fmt::age(d.created));
         }
+        Command::Branch { name, branch, new, delete } => branch_command(&name, branch.as_deref(), new, delete)?,
+        Command::Merge { name, branch } => {
+            let registry = Registry::open()?;
+            let head = registry.head(&name);
+            match registry.merge(&name, &branch)? {
+                Some(d) => println!("`{head}` of `{name}` is now {}, as `{branch}`; `keel start {name}` runs it", d.id),
+                None => println!("`{head}` of `{name}` already has everything `{branch}` has"),
+            }
+        }
+        Command::Diff { from, to } => diff(&from, &to)?,
         Command::Gc { keep } => packaging::gc(keep)?,
         Command::Recording { file } => recording::info(&file)?,
         Command::Replay { recording, dataflow, speed } => {
@@ -277,22 +304,101 @@ fn update(path: &std::path::Path, pid: u32) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn branch_command(name: &str, branch: Option<&str>, new: bool, delete: bool) -> Result<(), Box<dyn Error>> {
+    let registry = Registry::open()?;
+    let Some(branch) = branch else {
+        let head = registry.head(name);
+        registry.current(name)?;
+        println!("  {:<22} {:<13} {:>10}  DEPLOYMENTS", "BRANCH", "ID", "DEPLOYED");
+        for (branch, log) in registry.branches(name) {
+            let tip = log.last().and_then(|id| registry.find(id).ok());
+            println!(
+                "{} {:<22} {:<13} {:>10}  {}",
+                if branch == head { "*" } else { " " },
+                branch,
+                tip.as_ref().map_or("-", |d| &d.id),
+                tip.as_ref().map_or("-".into(), |d| fmt::age(d.created)),
+                log.len(),
+            );
+        }
+        return Ok(());
+    };
+    if delete {
+        registry.delete_branch(name, branch)?;
+        println!("deleted branch `{branch}` of `{name}`; `keel gc` forgets its deployments");
+    } else if new {
+        let d = registry.new_branch(name, branch)?;
+        println!("`{name}` is on a new branch `{branch}`, from {}; deployments now go there", d.id);
+    } else {
+        let d = registry.switch(name, branch)?;
+        println!("`{name}` is on `{branch}`, at {} ({}); `keel start {name}` runs it", d.id, fmt::age(d.created));
+    }
+    Ok(())
+}
+
+/// Node by node: what running `to` instead of `from` would change.
+fn diff(from: &str, to: &str) -> Result<(), Box<dyn Error>> {
+    let registry = Registry::open()?;
+    let (a, b) = (registry.find(from)?, registry.find(to)?);
+    println!("{} {} ({})  →  {} {} ({})", a.name, a.id, fmt::age(a.created), b.name, b.id, fmt::age(b.created));
+    if a.id == b.id {
+        println!("the same deployment");
+        return Ok(());
+    }
+    let short = |hash: Option<&String>| hash.map_or("-".to_owned(), |h| h[..12.min(h.len())].to_owned());
+    let mut ids: Vec<&String> = a.dataflow.nodes.iter().chain(&b.dataflow.nodes).map(|n| &n.id).collect();
+    ids.sort();
+    ids.dedup();
+    for id in ids {
+        let (old, new) = (a.dataflow.nodes.iter().find(|n| n.id == *id), b.dataflow.nodes.iter().find(|n| n.id == *id));
+        let (old_bin, new_bin) = (a.binaries.get(id), b.binaries.get(id));
+        let what = match (old, new) {
+            (Some(_), None) => "removed".to_owned(),
+            (None, Some(_)) => format!("added      {}", short(new_bin)),
+            _ => {
+                let settings = serde_json::to_string(&old)? != serde_json::to_string(&new)?;
+                match (old_bin != new_bin, settings) {
+                    (false, false) => format!("same       {}", short(old_bin)),
+                    (false, true) => format!("settings   {}", short(old_bin)),
+                    (true, false) => format!("binary     {} → {}", short(old_bin), short(new_bin)),
+                    (true, true) => format!("both       {} → {}", short(old_bin), short(new_bin)),
+                }
+            }
+        };
+        println!("  {id:<16} {what}");
+    }
+    if a.dataflow.machines != b.dataflow.machines {
+        println!("  machines changed: {:?} → {:?}", a.dataflow.machines, b.dataflow.machines);
+    }
+    if a.rustc != b.rustc {
+        println!("  compiler changed: {} → {}", a.rustc, b.rustc);
+    }
+    Ok(())
+}
+
 fn history(name: Option<&str>) -> Result<(), Box<dyn Error>> {
     let registry = Registry::open()?;
     let names = match name {
         Some(name) => vec![name.to_owned()],
         None => registry.names(),
     };
-    println!("  {:<22} {:<13} {:>10}  {:>5}  {:<16} RUSTC", "NAME", "ID", "DEPLOYED", "BUILT", "MACHINES");
+    println!(
+        "  {:<22} {:<13} {:<12} {:>10}  {:>5}  {:<16} RUSTC",
+        "NAME", "ID", "BRANCH", "DEPLOYED", "BUILT", "MACHINES"
+    );
     for name in names {
         let current = registry.current(&name).ok().map(|d| d.id);
+        let branches = registry.branches(&name);
         for d in registry.history(&name)? {
             let machines: Vec<&str> = d.dataflow.machines.keys().map(String::as_str).collect();
+            let at: Vec<&str> =
+                branches.iter().filter(|(_, log)| log.last() == Some(&d.id)).map(|(b, _)| b.as_str()).collect();
             println!(
-                "{} {:<22} {:<13} {:>10}  {:>5}  {:<16} {}",
+                "{} {:<22} {:<13} {:<12} {:>10}  {:>5}  {:<16} {}",
                 if current.as_ref() == Some(&d.id) { "*" } else { " " },
                 d.name,
                 d.id,
+                at.join(","),
                 fmt::age(d.created),
                 d.binaries.len(),
                 if machines.is_empty() { "(this one)".into() } else { machines.join(", ") },

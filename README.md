@@ -17,8 +17,31 @@ crates/keel          node API
 crates/keel-daemon   runs dataflows: sessions, coordinator, daemon, control API
 crates/keel-cli      the `keel` command, including the `keel top` TUI
 crates/keel-record   recordings: the file format and the recorder node
+crates/keel-control  control, on top of the node API: joint messages, a PID,
+                     a simulated joint, joints on a CAN bus
 examples/            talker/listener, a camera pipeline, benchmarks, each also
                      across two machines; containers/ runs them in Podman
+```
+
+## Size
+
+Lines of Rust that aren't blank or comments, at milestone 13:
+
+| | lines |
+|---|---:|
+| `crates/keel` | 1381 |
+| `crates/keel-daemon` | 3646 |
+| `crates/keel-cli` | 1287 |
+| `crates/keel-record` | 176 |
+| `crates/keel-control` | 392 |
+| `examples/` | 265 |
+| **total** | **7147** |
+
+Direct dependencies: `libc`, `serde`, `serde_json`, `serde_yaml`, and in the
+CLI `clap` and `ratatui`. To count again:
+
+```sh
+find crates examples -name '*.rs' | xargs grep -cvE '^\s*(//|$)' | awk -F: '{n += $2} END {print n}'
 ```
 
 ## Try it
@@ -94,6 +117,19 @@ keel start pipeline-two-machines                 # run the current one
 keel gc --keep 3                                 # forget older ones, delete unused binaries
 ```
 
+A deployed dataflow has branches, to try something without losing what
+works. Deployments go to the branch you're on, and `keel start` runs its
+newest one:
+
+```sh
+keel branch pipeline-two-machines planner --new  # start a branch from the current deployment
+keel deploy examples/pipeline-two-machines.yml   # lands on `planner`
+keel diff pipeline-two-machines@main pipeline-two-machines   # node by node: binary, settings
+keel branch pipeline-two-machines main           # back to main (no branch name: list them)
+keel start pipeline-two-machines@planner         # run a branch without switching to it
+keel merge pipeline-two-machines planner         # main takes what planner has
+```
+
 Cross-building needs the target: `rustup target add aarch64-unknown-linux-musl`
 (and `x86_64-unknown-linux-musl`).
 
@@ -136,6 +172,28 @@ camera/frames@robot #11: 7.63s end to end
 
 (A Raspberry Pi on Wi-Fi sending 6 MB frames to a laptop: the frame waited
 6.5 s in the camera's queue before its daemon could send it.)
+
+### Control
+
+`keel-control` is a layer above keel, not part of it: nodes that publish a
+joint `state` and take a `command`, and a controller between them. The
+controller doesn't know what the joints are, so the same one runs against
+a simulation and against a CAN bus:
+
+```sh
+keel run examples/control-sim.yml    # keel-pid holding a simulated pendulum at 1 rad, at 1 kHz
+keel logs controller                 # "5s target 1: at 1.000 rad, +0.000 rad/s, pushing +4.13 N m"
+```
+
+`examples/control-can.yml` puts the joint behind a CAN bus (SocketCAN, a
+raw socket): `keel-can` is the bus master, and `keel-can-motor` stands in
+for the drive at the other end of a virtual interface. No hardware, and no
+root either, in a network namespace:
+
+```sh
+unshare -rn sh -c 'ip link add vcan0 type vcan && ip link set vcan0 up &&
+  ./target/debug/keel run examples/control-can.yml'
+```
 
 Other examples: `keel run examples/dataflow.yml` (talker/listener), and the
 benchmarks: `cargo build --release`, then `./target/release/keel run examples/bench.yml`

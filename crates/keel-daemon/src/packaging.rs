@@ -13,6 +13,10 @@
 //! dataflow name, so they can be listed, rolled back, and started again.
 //! `gc` forgets old ones, and has every daemon delete the binaries no
 //! deployment uses any more.
+//!
+//! A dataflow name has branches: each is the list of deployments made on it,
+//! oldest first. Deploying adds to the branch that's checked out, and its
+//! newest deployment is the current one.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -31,6 +35,9 @@ use crate::wire::{self, Event, ToDaemon};
 
 /// Deployments kept per dataflow name by `keel gc`, besides the current one.
 pub const DEFAULT_KEEP: usize = 5;
+
+/// The branch a dataflow name starts on.
+pub const MAIN: &str = "main";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Deployment {
@@ -277,10 +284,17 @@ impl Registry {
     }
 
     fn record(&self, deployment: &Deployment) -> io::Result<()> {
-        let dir = self.dir.join(&deployment.name);
+        let (name, id) = (&deployment.name, &deployment.id);
+        let dir = self.dir.join(name);
         fs::create_dir_all(&dir)?;
-        fs::write(dir.join(format!("{}.json", deployment.id)), serde_json::to_vec_pretty(deployment)?)?;
-        self.set_current(&deployment.name, &deployment.id)
+        fs::write(dir.join(format!("{id}.json")), serde_json::to_vec_pretty(deployment)?)?;
+        let branch = self.head(name);
+        let mut log = self.log(name, &branch).unwrap_or_default();
+        if log.last() != Some(id) {
+            log.push(id.clone());
+        }
+        self.write_log(name, &branch, &log)?;
+        self.set_current(name, id)
     }
 
     fn set_current(&self, name: &str, id: &str) -> io::Result<()> {
@@ -326,10 +340,16 @@ impl Registry {
         Ok(serde_json::from_slice(&json)?)
     }
 
-    /// A deployment by name (its current one) or by id (or a prefix of it).
+    /// A deployment by name (its current one), by `name@branch` (that
+    /// branch's newest), or by id (or a prefix of it).
     pub fn find(&self, what: &str) -> io::Result<Deployment> {
         if self.dir.join(what).is_dir() {
             return self.current(what);
+        }
+        if let Some((name, branch)) = what.split_once('@') {
+            let log = self.log(name, branch)?;
+            let tip = log.last().ok_or_else(|| io::Error::other(format!("branch `{branch}` of `{name}` is empty")))?;
+            return self.get(name, tip);
         }
         let matches: Vec<Deployment> = (self.names().iter())
             .flat_map(|name| self.history(name).unwrap_or_default())
@@ -342,32 +362,161 @@ impl Registry {
         }
     }
 
-    /// Makes `id`, or the deployment before the current one, current.
+    /// Moves the checked-out branch to `id`, or back to the deployment
+    /// before its newest one.
     pub fn rollback(&self, name: &str, id: Option<&str>) -> io::Result<Deployment> {
-        let history = self.history(name)?;
+        let branch = self.head(name);
+        let mut log = self.log(name, &branch)?;
         let target = match id {
-            Some(id) => history.iter().find(|d| d.id.starts_with(id)),
-            None => {
-                let current = self.current(name)?;
-                history.iter().skip_while(|d| d.id != current.id).nth(1)
+            Some(id) => {
+                let found = self.history(name)?.into_iter().find(|d| d.id.starts_with(id));
+                let target = found.ok_or_else(|| io::Error::other(format!("no deployment {id} of `{name}`")))?;
+                if log.last() != Some(&target.id) {
+                    log.push(target.id.clone());
+                }
+                target
             }
+            // Past the ones `gc` has forgotten.
+            None => loop {
+                log.pop();
+                match log.last() {
+                    Some(id) => match self.get(name, id) {
+                        Ok(target) => break target,
+                        Err(_) => continue,
+                    },
+                    None => return Err(io::Error::other(format!("nothing to roll `{name}` back to"))),
+                }
+            },
         };
-        let target = target.cloned().ok_or_else(|| io::Error::other(format!("nothing to roll `{name}` back to")))?;
+        self.write_log(name, &branch, &log)?;
         self.set_current(name, &target.id)?;
         Ok(target)
+    }
+
+    /// The branch that's checked out: the one deployments are added to.
+    pub fn head(&self, name: &str) -> String {
+        let head = fs::read_to_string(self.dir.join(name).join("head")).unwrap_or_default();
+        match head.trim() {
+            "" => MAIN.to_owned(),
+            branch => branch.to_owned(),
+        }
+    }
+
+    /// A branch's deployments, oldest first.
+    pub fn log(&self, name: &str, branch: &str) -> io::Result<Vec<String>> {
+        check_branch(branch)?;
+        let branches = self.dir.join(name).join("branches");
+        match fs::read_to_string(branches.join(branch)) {
+            Ok(log) => Ok(log.lines().map(str::to_owned).collect()),
+            // Recorded before there were branches: `main` is everything up
+            // to the current one.
+            Err(_) if branch == MAIN && !branches.exists() => {
+                let current = self.current(name)?.id;
+                let mut log: Vec<String> = self.history(name)?.into_iter().rev().map(|d| d.id).collect();
+                log.truncate(log.iter().position(|id| *id == current).map_or(0, |i| i + 1));
+                Ok(log)
+            }
+            Err(_) => Err(io::Error::other(format!("`{name}` has no branch `{branch}`"))),
+        }
+    }
+
+    fn write_log(&self, name: &str, branch: &str, log: &[String]) -> io::Result<()> {
+        check_branch(branch)?;
+        let dir = self.dir.join(name).join("branches");
+        fs::create_dir_all(&dir)?;
+        let temp = dir.join(format!(".{branch}"));
+        fs::write(&temp, log.iter().map(|id| format!("{id}\n")).collect::<String>())?;
+        fs::rename(temp, dir.join(branch))
+    }
+
+    /// A name's branches and their logs.
+    pub fn branches(&self, name: &str) -> Vec<(String, Vec<String>)> {
+        let mut names: Vec<String> = (fs::read_dir(self.dir.join(name).join("branches")).into_iter().flatten())
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|branch| !branch.starts_with('.'))
+            .collect();
+        if names.is_empty() {
+            names.push(MAIN.to_owned());
+        }
+        names.sort();
+        names.into_iter().filter_map(|branch| self.log(name, &branch).ok().map(|log| (branch, log))).collect()
+    }
+
+    /// Starts `branch` from the current deployment, and checks it out.
+    pub fn new_branch(&self, name: &str, branch: &str) -> io::Result<Deployment> {
+        let current = self.current(name)?;
+        if self.log(name, branch).is_ok() {
+            return Err(io::Error::other(format!("`{name}` already has a branch `{branch}`")));
+        }
+        // Writing a branch ends the time before branches: `main` gets its file.
+        let head = self.head(name);
+        self.write_log(name, &head, &self.log(name, &head)?)?;
+        self.write_log(name, branch, std::slice::from_ref(&current.id))?;
+        fs::write(self.dir.join(name).join("head"), branch)?;
+        Ok(current)
+    }
+
+    /// Checks `branch` out: its newest deployment becomes the current one.
+    pub fn switch(&self, name: &str, branch: &str) -> io::Result<Deployment> {
+        let log = self.log(name, branch)?;
+        let tip = log.last().ok_or_else(|| io::Error::other(format!("branch `{branch}` of `{name}` is empty")))?;
+        let deployment = self.get(name, tip)?;
+        fs::write(self.dir.join(name).join("head"), branch)?;
+        self.set_current(name, tip)?;
+        Ok(deployment)
+    }
+
+    pub fn delete_branch(&self, name: &str, branch: &str) -> io::Result<()> {
+        self.log(name, branch)?;
+        if self.head(name) == branch {
+            return Err(io::Error::other(format!("`{branch}` is checked out: switch to another branch first")));
+        }
+        fs::remove_file(self.dir.join(name).join("branches").join(branch))
+    }
+
+    /// Brings the checked-out branch up to `branch`. Only forward: `branch`
+    /// must have started from, or passed through, where this one is now.
+    /// `None` when there was nothing to bring.
+    pub fn merge(&self, name: &str, branch: &str) -> io::Result<Option<Deployment>> {
+        let head = self.head(name);
+        let (mut ours, theirs) = (self.log(name, &head)?, self.log(name, branch)?);
+        let tip = ours.last().ok_or_else(|| io::Error::other(format!("branch `{head}` of `{name}` is empty")))?;
+        let Some(at) = theirs.iter().rposition(|id| id == tip) else {
+            return Err(io::Error::other(format!(
+                "`{head}` has moved to {tip} since `{branch}` left it: deploy sources that hold both onto `{head}`"
+            )));
+        };
+        if at + 1 == theirs.len() {
+            return Ok(None);
+        }
+        let deployment = self.get(name, theirs.last().unwrap())?;
+        ours.extend_from_slice(&theirs[at + 1..]);
+        self.write_log(name, &head, &ours)?;
+        self.set_current(name, &deployment.id)?;
+        Ok(Some(deployment))
+    }
+}
+
+/// Branch names become file names.
+fn check_branch(branch: &str) -> io::Result<()> {
+    let ok = |b: u8| b.is_ascii_alphanumeric() || b"-_.".contains(&b);
+    match !branch.is_empty() && branch.len() <= 64 && !branch.starts_with('.') && branch.bytes().all(ok) {
+        true => Ok(()),
+        false => Err(io::Error::new(io::ErrorKind::InvalidInput, format!("not a branch name: {branch:?}"))),
     }
 }
 
 /// Forgets all but the newest `keep` deployments of each name (and the
-/// current one), then has the machines they ran on delete binaries nothing
+/// newest of each branch), then has the machines they ran on delete binaries nothing
 /// uses any more. A deployment whose machines can't be reached is kept.
 pub fn gc(keep: usize) -> io::Result<()> {
     let registry = Registry::open()?;
     let mut forget: Vec<Deployment> = Vec::new();
     for name in registry.names() {
-        let current = registry.current(&name).ok().map(|d| d.id);
+        let tips: Vec<String> = registry.branches(&name).into_iter().filter_map(|(_, mut log)| log.pop()).collect();
         let history = registry.history(&name)?;
-        forget.extend(history.into_iter().skip(keep).filter(|d| Some(&d.id) != current.as_ref()));
+        forget.extend(history.into_iter().skip(keep).filter(|d| !tips.contains(&d.id)));
     }
     // Where each forgotten deployment has binaries: this machine, or
     // daemons by address.
@@ -435,5 +584,77 @@ fn human_bytes(n: u64) -> String {
         n if n >= 1 << 20 => format!("{:.1} MiB", n as f64 / (1 << 20) as f64),
         n if n >= 1 << 10 => format!("{:.1} KiB", n as f64 / 1024.0),
         n => format!("{n} B"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn deployment(id: &str, created: u64) -> Deployment {
+        Deployment {
+            id: id.into(),
+            name: "robot".into(),
+            source: "robot.yml".into(),
+            created,
+            rustc: String::new(),
+            dataflow: Dataflow { machines: BTreeMap::new(), nodes: Vec::new() },
+            base_dir: PathBuf::new(),
+            binaries: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn branches() {
+        let dir = std::env::temp_dir().join(format!("keel-registry-test-{}", std::process::id()));
+        let registry = Registry { dir: dir.clone() };
+        let current = || registry.current("robot").unwrap().id;
+
+        // Two deployments recorded before there were branches.
+        fs::create_dir_all(dir.join("robot")).unwrap();
+        for (id, created) in [("a1", 1), ("a2", 2)] {
+            fs::write(
+                dir.join("robot").join(format!("{id}.json")),
+                serde_json::to_vec(&deployment(id, created)).unwrap(),
+            )
+            .unwrap();
+        }
+        registry.set_current("robot", "a2").unwrap();
+        assert_eq!(registry.head("robot"), MAIN);
+        assert_eq!(registry.log("robot", MAIN).unwrap(), ["a1", "a2"]);
+
+        // A branch starts from the current deployment, and takes the next ones.
+        registry.new_branch("robot", "planner").unwrap();
+        assert!(registry.new_branch("robot", "planner").is_err());
+        assert!(registry.new_branch("robot", "../main").is_err());
+        registry.record(&deployment("b1", 3)).unwrap();
+        registry.record(&deployment("b2", 4)).unwrap();
+        registry.record(&deployment("b2", 4)).unwrap();
+        assert_eq!(registry.log("robot", "planner").unwrap(), ["a2", "b1", "b2"]);
+        assert_eq!(registry.log("robot", MAIN).unwrap(), ["a1", "a2"]);
+        assert_eq!(registry.find("robot@main").unwrap().id, "a2");
+        assert_eq!(registry.rollback("robot", None).unwrap().id, "b1");
+        assert_eq!(registry.rollback("robot", Some("b2")).unwrap().id, "b2");
+
+        // Switching changes what's current; main catches up by merging.
+        assert!(registry.delete_branch("robot", "planner").is_err(), "checked out");
+        assert_eq!(registry.switch("robot", MAIN).unwrap().id, "a2");
+        assert_eq!(current(), "a2");
+        assert_eq!(registry.merge("robot", "planner").unwrap().unwrap().id, "b2");
+        assert_eq!(registry.log("robot", MAIN).unwrap(), ["a1", "a2", "b1", "b2"]);
+        assert!(registry.merge("robot", "planner").unwrap().is_none());
+
+        // Once main has moved on its own, the branch can't be merged forward.
+        registry.record(&deployment("a3", 5)).unwrap();
+        registry.switch("robot", "planner").unwrap();
+        registry.record(&deployment("b3", 6)).unwrap();
+        registry.switch("robot", MAIN).unwrap();
+        assert!(registry.merge("robot", "planner").is_err());
+        assert_eq!(current(), "a3");
+
+        registry.delete_branch("robot", "planner").unwrap();
+        assert_eq!(registry.branches("robot").len(), 1);
+        assert!(registry.switch("robot", "planner").is_err());
+        fs::remove_dir_all(dir).unwrap();
     }
 }
