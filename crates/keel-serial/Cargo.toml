@@ -1,0 +1,12 @@
+[package]
+name = "keel-serial"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The node standing in for a microcontroller on a serial port, and an emulated chip to try it with"
+
+[dependencies]
+keel = { path = "../keel" }
+keel-control = { path = "../keel-control" }
+keel-micro = { path = "../keel-micro" }
+libc = "0.2"

@@ -1,0 +1,8 @@
+[package]
+name = "keel-micro"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A keel node on a microcontroller: no_std, no allocation, over a serial link"
+
+[dependencies]

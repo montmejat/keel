@@ -30,3 +30,4 @@ Superseded records stay, with a link to what replaced them.
 | [0022](0022-flight-recorder.md) | Flight recorder: the last seconds in shared memory, saved by the daemon on a failure | Proposed |
 | [0023](0023-process-one.md) | keel as process 1: a machine that is a kernel and keel | Proposed |
 | [0024](0024-fleet.md) | Fleet: each robot is a deployment of its own, the fleet acts on several | Proposed |
+| [0025](0025-microcontroller-nodes.md) | A microcontroller is a node, behind a bridge on a serial link | Proposed |

@@ -698,12 +698,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-micro"
+version = "0.1.0"
+
+[[package]]
 name = "keel-record"
 version = "0.1.0"
 dependencies = [
  "keel",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "keel-serial"
+version = "0.1.0"
+dependencies = [
+ "keel",
+ "keel-control",
+ "keel-micro",
+ "libc",
 ]
 
 [[package]]

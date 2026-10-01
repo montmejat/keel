@@ -139,6 +139,9 @@ overlaps with systemd.
 16. **Fleet** (done): a fleet file lists robots running one dataflow; `keel
     fleet run | status | update | rollback`, with `--only` to try new code
     on some robots first ([0024](decisions/0024-fleet.md)).
+17. **A node on a microcontroller** (done, without hardware): `keel-micro`,
+    a `no_std` node over a serial link, and `keel-serial`, the node standing
+    in for it ([0025](decisions/0025-microcontroller-nodes.md)).
 
 ## Benchmarks
 

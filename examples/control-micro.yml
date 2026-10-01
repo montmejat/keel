@@ -1,0 +1,21 @@
+# The controller of control-sim.yml, with the joint on a microcontroller:
+# `joints` (keel-serial) stands in for a chip running keel-micro, reached
+# over a serial port. Here the chip is pretend: `chip` runs the firmware
+# loop over a pseudo-terminal. With a real one, drop `chip` and point
+# `--port` at its device (/dev/ttyACM0).
+nodes:
+  - id: chip
+    path: ../target/debug/keel-micro-joint
+    args: ["--port", "/tmp/keel-chip0"]
+
+  - id: joints
+    path: ../target/debug/keel-serial
+    args: ["--port", "/tmp/keel-chip0", "--outputs", "state", "--inputs", "command"]
+    inputs:
+      command: { source: controller/command, keep: latest }
+
+  - id: controller
+    path: ../target/debug/keel-pid
+    args: ["--target", "1.0"]
+    inputs:
+      state: { source: joints/state, keep: latest }

@@ -38,6 +38,7 @@ From a bare machine up:
 | Observability | `keel top` · `keel trace` · `keel replay` |
 | Fleet | `keel fleet run` · `keel fleet status` · `keel fleet update --only robot-3` |
 | Control | `keel-pid` · `keel-sim` · `keel-can` |
+| Microcontrollers | `keel_micro::Node` · `keel-serial --port /dev/ttyACM0` |
 
 ## Try it
 
@@ -223,6 +224,29 @@ unshare -rn sh -c 'ip link add vcan0 type vcan && ip link set vcan0 up &&
   ./target/debug/keel run examples/control-can.yml'
 ```
 
+### On a microcontroller
+
+`keel-micro` is the node API for a chip: `no_std`, no allocation, no
+dependencies, over any byte link (a UART). On the machine it's plugged
+into, `keel-serial` stands in for it as an ordinary node, so the chip shows
+up in `keel top`, traces and recordings like the rest:
+
+```rust
+let mut node: keel_micro::Node<Uart, 64> = keel_micro::Node::new(uart);
+loop {
+    while let Some((COMMAND, payload)) = node.poll() { /* drive the motor */ }
+    node.send(STATE, &encoder.to_le_bytes());
+}
+```
+
+```sh
+keel run examples/control-micro.yml    # the PID again, its joint on a pretend chip
+```
+
+It builds for a Cortex-M (`cargo build -p keel-micro --target
+thumbv7em-none-eabihf`) and has only run on a pretend chip so far: the same
+loop over a pseudo-terminal.
+
 Other examples: `keel run examples/dataflow.yml` (talker/listener), and the
 benchmarks: `cargo build --release`, then `./target/release/keel run examples/bench.yml`
 (latency, throughput) or `examples/jitter.yml` (a 1 kHz loop).
@@ -284,13 +308,15 @@ crates/keel-cli      the `keel` command, including the `keel top` TUI
 crates/keel-record   recordings: the file format and the recorder node
 crates/keel-control  control, on top of the node API: joint messages, a PID,
                      a simulated joint, joints on a CAN bus
+crates/keel-micro    a node on a microcontroller: no_std, no allocation
+crates/keel-serial   the node standing in for that chip on a serial port
 examples/            talker/listener, a camera pipeline, benchmarks, each also
                      across two machines; containers/ runs them in Podman
 ```
 
 ### Size
 
-Lines of Rust that aren't blank or comments, at milestone 16:
+Lines of Rust that aren't blank or comments, at milestone 17:
 
 | | lines |
 |---|---:|
@@ -299,8 +325,10 @@ Lines of Rust that aren't blank or comments, at milestone 16:
 | `crates/keel-cli` | 1476 |
 | `crates/keel-record` | 317 |
 | `crates/keel-control` | 392 |
+| `crates/keel-micro` | 143 |
+| `crates/keel-serial` | 178 |
 | `examples/` | 265 |
-| **total** | **7898** |
+| **total** | **8219** |
 
 Direct dependencies: `libc`, `serde`, `serde_json`, `serde_yaml`, and in the
 CLI `clap` and `ratatui`. To count again:
