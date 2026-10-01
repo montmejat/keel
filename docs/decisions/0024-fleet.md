@@ -1,6 +1,6 @@
 # 0024: Fleet: each robot is a deployment of its own, the fleet acts on several
 
-**Status:** Proposed, 2026-10-01
+**Status:** Accepted, 2026-10-01 (proposed 2026-10-01)
 
 ## Context
 Everything so far is one robot: one dataflow on its machines. With several

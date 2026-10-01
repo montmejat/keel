@@ -1,6 +1,6 @@
 # 0008: Keep the hand-rolled wire format, for now
 
-**Status:** Proposed, 2026-09-24
+**Status:** Accepted, 2026-10-01 (proposed 2026-09-24)
 
 ## Context
 Daemon and nodes talk through length-prefixed frames written by hand

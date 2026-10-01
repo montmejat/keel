@@ -1,6 +1,6 @@
 # 0007: CLI and TUI are clients of the control API
 
-**Status:** Proposed, 2026-09-24
+**Status:** Accepted, 2026-10-01 (proposed 2026-09-24)
 
 ## Context
 keel should come with good terminal tools: a live view of a running dataflow

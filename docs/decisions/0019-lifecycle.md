@@ -1,6 +1,6 @@
 # 0019: Lifecycle: restart policies, a watchdog, rolling updates
 
-**Status:** Proposed, 2026-10-01
+**Status:** Accepted, 2026-10-01 (proposed 2026-10-01)
 
 ## Context
 Until now a node that failed stopped the whole dataflow, a node stuck in a

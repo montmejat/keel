@@ -1,6 +1,6 @@
 # 0011: Control API: JSON lines over a Unix socket
 
-**Status:** Proposed, 2026-09-24
+**Status:** Accepted, 2026-10-01 (proposed 2026-09-24)
 
 ## Context
 Tools (`keel ps`, `logs`, `stop`, `top`) and, later, the coordinator need to

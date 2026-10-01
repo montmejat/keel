@@ -1,6 +1,6 @@
 # 0018: Provisioning over SSH, a systemd service, and a shared token
 
-**Status:** Proposed, 2026-10-01
+**Status:** Accepted, 2026-10-01 (proposed 2026-10-01)
 
 ## Context
 A machine became a keel machine by hand: cross-compile `keel`, copy it,

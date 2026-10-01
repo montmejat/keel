@@ -1,6 +1,6 @@
 # 0006: One coordinator, one daemon per machine
 
-**Status:** Proposed, 2026-09-24. Implemented in milestone 4, awaiting review.
+**Status:** Accepted, 2026-10-01 (proposed 2026-09-24). Implemented in milestone 4.
 
 ## Context
 Multi-machine is in scope. Something has to decide which node runs where,

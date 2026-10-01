@@ -1,6 +1,6 @@
 # 0020: Branches: a named list of deployments per dataflow
 
-**Status:** Proposed, 2026-10-01
+**Status:** Accepted, 2026-10-01 (proposed 2026-10-01)
 
 ## Context
 Deployments already look like git: binaries stored by hash, a deployment

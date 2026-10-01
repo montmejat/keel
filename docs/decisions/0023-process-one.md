@@ -1,6 +1,6 @@
 # 0023: keel as process 1: a machine that is a kernel and keel
 
-**Status:** Proposed, 2026-10-01
+**Status:** Accepted, 2026-10-01 (proposed 2026-10-01)
 
 ## Context
 Provisioning ([0018](0018-provisioning.md)) installs keel on a machine that

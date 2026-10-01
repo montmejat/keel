@@ -1,6 +1,6 @@
 # 0015: Real-time data plane: nodes talk directly, the daemon only sets up
 
-**Status:** Proposed, 2026-09-30
+**Status:** Accepted, 2026-10-01 (proposed 2026-09-30)
 
 ## Context
 The jitter benchmark ([architecture](../architecture.md#jitter)) shows a

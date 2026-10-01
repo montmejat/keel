@@ -1,6 +1,6 @@
 # 0010: Build the core by hand, use crates at the edges
 
-**Status:** Proposed, 2026-09-24
+**Status:** Accepted, 2026-10-01 (proposed 2026-09-24)
 
 ## Context
 keel is for learning how a middleware works, so writing parts by hand is

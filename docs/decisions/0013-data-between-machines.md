@@ -1,6 +1,6 @@
 # 0013: Data between machines: TCP to the peer daemon, into its shared memory
 
-**Status:** Proposed, 2026-09-24
+**Status:** Accepted, 2026-10-01 (proposed 2026-09-24)
 
 ## Context
 Nodes on different machines can't share memory. The node API must not

@@ -1,6 +1,6 @@
 # 0004: Separate data and control planes
 
-**Status:** Proposed, 2026-09-24
+**Status:** Accepted, 2026-10-01 (proposed 2026-09-24)
 
 ## Context
 Today the daemon does everything over one socket per node: registration,

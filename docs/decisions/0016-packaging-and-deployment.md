@@ -1,6 +1,6 @@
 # 0016: Packaging and deployment: reproducible static binaries, stored by hash
 
-**Status:** Proposed, 2026-09-30
+**Status:** Accepted, 2026-10-01 (proposed 2026-09-30)
 
 ## Context
 Until now every machine needed the node binaries at the same path as on the

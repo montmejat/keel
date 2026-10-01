@@ -1,6 +1,6 @@
 # 0017: Recording and replay: a recorder node, a flat file, replay in place
 
-**Status:** Proposed, 2026-09-30
+**Status:** Accepted, 2026-10-01 (proposed 2026-09-30)
 
 ## Context
 Robots produce data worth keeping: to replay a scene through a changed

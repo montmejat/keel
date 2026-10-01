@@ -1,6 +1,6 @@
 # 0012: The daemon is a small init for its nodes
 
-**Status:** Proposed, 2026-09-24
+**Status:** Accepted, 2026-10-01 (proposed 2026-09-24)
 
 ## Context
 The daemon starts nodes, so it's responsible for how they end: on Ctrl-C, on

@@ -1,6 +1,6 @@
 # 0025: A microcontroller is a node, behind a bridge on a serial link
 
-**Status:** Proposed, 2026-10-01
+**Status:** Accepted, 2026-10-01 (proposed 2026-10-01)
 
 ## Context
 The last hop to hardware is usually a microcontroller: it reads the

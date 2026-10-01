@@ -1,6 +1,6 @@
 # 0022: Flight recorder: the last seconds in shared memory, saved by the daemon on a failure
 
-**Status:** Proposed, 2026-10-01
+**Status:** Accepted, 2026-10-01 (proposed 2026-10-01)
 
 ## Context
 Recording ([0017](0017-recording-and-replay.md)) has to be decided before
