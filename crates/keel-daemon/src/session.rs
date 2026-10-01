@@ -14,7 +14,9 @@
 //! The session acts as a small init for its nodes: it captures their output,
 //! applies their real-time settings, stops them in dataflow order (`Stop` in
 //! their bell once all their upstream nodes have exited, then SIGTERM, then
-//! SIGKILL), and makes sure they die with it. What happens is reported as
+//! SIGKILL), and makes sure they die with it. It restarts nodes whose policy
+//! says so, kills those its watchdog finds stuck, and replaces nodes one at
+//! a time when a new deployment comes in. What happens is reported as
 //! [`Event`]s, to `keel run` or to the coordinator.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -22,7 +24,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
@@ -35,12 +37,13 @@ use keel::protocol::{
     DaemonMsg, NodeMsg, PeerMsg, ENV_DAEMON_SOCKET, ENV_DATAFLOW, ENV_DEPLOYMENT, ENV_NODE_ID, ENV_REALTIME,
     ENV_SHM_DIR,
 };
-use keel::shm::{self, Pool, Region};
+use keel::shm::{self, HeldTable, Pool, Region};
 use keel::trace::{self, ENV_NODE_INDEX};
 
 use crate::control::{self, Clock, LinkStatus, LogLine, NodeState, NodeStatus, Reply, Request, Status};
-use crate::dataflow::{Dataflow, NodeConfig, Realtime, Routes};
+use crate::dataflow::{Dataflow, NodeConfig, Realtime, Restart, Routes};
 use crate::runtime::SessionFiles;
+use crate::store::Store;
 use crate::tracing::Tracing;
 use crate::wire::{self, Event};
 
@@ -54,9 +57,11 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const LOG_CAPACITY: usize = 10_000;
 /// How often the nodes' trace events are collected.
 const TRACE_COLLECT_INTERVAL: Duration = Duration::from_millis(20);
-
-/// Spawned nodes, and the threads capturing their output.
-type Spawned = (Vec<(String, Child)>, Vec<JoinHandle<()>>);
+/// Restarts wait this long, doubling each time, up to `MAX_BACKOFF`.
+const FIRST_BACKOFF: Duration = Duration::from_millis(100);
+const MAX_BACKOFF: Duration = Duration::from_secs(5);
+/// A node that ran this long since its last start gets its restarts back.
+const STABLE_AFTER: Duration = Duration::from_secs(60);
 /// Local `(node, input, channel)`s fed by each remote `(node, output)`.
 type Inbound = HashMap<(String, String), Vec<(String, String, Target)>>;
 
@@ -84,9 +89,19 @@ pub(crate) struct Session {
     /// What each local node is told at start: its channels and targets.
     node_routes: HashMap<String, String>,
     dataflow_name: String,
-    deployment: Option<String>,
+    /// The deployment running; an update replaces it.
+    deployment: Mutex<Option<String>>,
     /// What each local node runs, for display.
     programs: HashMap<String, String>,
+    /// Local nodes, to spawn them again.
+    configs: HashMap<String, NodeConfig>,
+    base_dir: PathBuf,
+    /// What `build:` nodes run; an update replaces entries.
+    executables: Mutex<BTreeMap<String, PathBuf>>,
+    /// Source node of each local node's inputs, in their stats-file order:
+    /// to release what a dead node held.
+    input_sources: HashMap<String, Vec<String>>,
+    output_threads: Mutex<Vec<JoinHandle<()>>>,
     tracing: Tracing,
     machine: Option<String>,
     /// Node -> machine; empty when everything is local.
@@ -125,8 +140,15 @@ struct State {
     name: PathBuf,
     start: Instant,
     expected: HashSet<String>,
-    /// Registered nodes' connections, to send them their routes.
-    sockets: HashMap<String, UnixStream>,
+    /// Registered nodes' connections, to send them their routes, numbered so
+    /// that a restarted node's old connection closing doesn't drop its new one.
+    sockets: HashMap<String, (u64, UnixStream)>,
+    next_connection: u64,
+    /// `start` has run: nodes registering from now on are restarts.
+    started: bool,
+    /// Nodes to replace with their new binary, one at a time.
+    updates: VecDeque<String>,
+    updating: Option<String>,
     bells: HashMap<String, Bell>,
     /// Nodes still running upstream of each local node.
     upstream: HashMap<String, HashSet<String>>,
@@ -147,6 +169,10 @@ struct NodeInfo {
     stop_sent: Option<Instant>,
     /// We sent it SIGTERM, so dying of it counts as a clean exit.
     terminated: bool,
+    restarts: u32,
+    started: Instant,
+    /// Being replaced by an update: start it again whatever its policy.
+    replacing: bool,
 }
 
 impl State {
@@ -259,12 +285,23 @@ impl Session {
                 start: Instant::now(),
                 expected: local_nodes.iter().map(|n| n.id.clone()).collect(),
                 sockets: HashMap::new(),
+                next_connection: 0,
+                started: false,
+                updates: VecDeque::new(),
+                updating: None,
                 bells,
                 upstream: (graph.upstream.into_iter()).filter(|(id, _)| is_local(id)).collect(),
                 nodes: (local_nodes.iter())
                     .map(|n| {
-                        let info =
-                            NodeInfo { pid: None, state: NodeState::Starting, stop_sent: None, terminated: false };
+                        let info = NodeInfo {
+                            pid: None,
+                            state: NodeState::Starting,
+                            stop_sent: None,
+                            terminated: false,
+                            restarts: 0,
+                            started: Instant::now(),
+                            replacing: false,
+                        };
                         (n.id.clone(), info)
                     })
                     .collect(),
@@ -281,7 +318,17 @@ impl Session {
             node_index,
             node_routes,
             dataflow_name: config.name.file_stem().map_or(String::new(), |s| s.to_string_lossy().into_owned()),
-            deployment: config.deployment.clone(),
+            deployment: Mutex::new(config.deployment.clone()),
+            configs: local_nodes.iter().map(|n| (n.id.clone(), n.clone())).collect(),
+            base_dir: config.base_dir.clone(),
+            executables: Mutex::new(config.executables.clone()),
+            input_sources: (local_nodes.iter())
+                .map(|n| {
+                    let sources = n.inputs.values().map(|i| i.source().split('/').next().unwrap().to_owned());
+                    (n.id.clone(), sources.collect())
+                })
+                .collect(),
+            output_threads: Mutex::new(Vec::new()),
             programs: (local_nodes.iter())
                 .map(|n| {
                     let file = n.path.as_ref().and_then(|p| p.file_name()).map(|f| f.to_string_lossy().into_owned());
@@ -336,21 +383,25 @@ impl Session {
         {
             let session = session.clone();
             std::thread::spawn(move || {
-                let spawned = session.spawn_all(&local_nodes, &config.base_dir, &config.executables);
-                let (children, output_threads) = match spawned {
-                    Ok(spawned) => spawned,
-                    Err(e) => {
-                        session.cleanup();
-                        let _ = spawned_tx.send(Err(e));
-                        return;
+                let mut children = Vec::new();
+                for node in &local_nodes {
+                    match session.spawn_one(node) {
+                        Ok(child) => children.push((node.id.clone(), child)),
+                        Err(e) => {
+                            session.kill_all(&mut children);
+                            session.cleanup();
+                            let _ = spawned_tx.send(Err(e));
+                            return;
+                        }
                     }
-                };
+                }
                 let _ = spawned_tx.send(Ok(()));
                 if local_nodes.is_empty() {
                     session.emit(Event::AllRegistered);
                 }
                 let ok = session.supervise(children);
-                for thread in output_threads {
+                let threads = std::mem::take(&mut *session.output_threads.lock().unwrap());
+                for thread in threads {
                     let _ = thread.join();
                 }
                 session.cleanup();
@@ -373,13 +424,41 @@ impl Session {
             self.peers.lock().unwrap().insert(machine.clone(), Arc::new(Mutex::new(stream)));
         }
         let mut s = self.state.lock().unwrap();
+        s.started = true;
         let ids: Vec<String> = s.sockets.keys().cloned().collect();
         for id in ids {
             let routes = self.node_routes.get(&id).cloned().unwrap_or_default();
-            let _ = DaemonMsg::Ready { routes }.write_to(s.sockets.get_mut(&id).unwrap());
+            let _ = DaemonMsg::Ready { routes }.write_to(&mut s.sockets.get_mut(&id).unwrap().1);
             s.set_state(&id, NodeState::Running);
         }
         Ok(())
+    }
+
+    /// Replaces local nodes' binaries with a new deployment's, restarting the
+    /// nodes whose binary changed one at a time. Returns those nodes.
+    pub fn update(&self, deployment: Option<String>, binaries: &BTreeMap<String, String>) -> io::Result<Vec<String>> {
+        let store = Store::open()?;
+        let mut changed = Vec::new();
+        {
+            let mut executables = self.executables.lock().unwrap();
+            for (node, hash) in binaries.iter().filter(|(node, _)| self.configs.contains_key(*node)) {
+                let path = store.blob(hash)?;
+                if !path.exists() {
+                    return Err(io::Error::other(format!("`{node}`'s new binary {hash} isn't in the store")));
+                }
+                if executables.get(node) != Some(&path) {
+                    executables.insert(node.clone(), path);
+                    changed.push(node.clone());
+                }
+            }
+        }
+        *self.deployment.lock().unwrap() = deployment;
+        let mut s = self.state.lock().unwrap();
+        if !changed.is_empty() {
+            s.log("daemon", format!("updating {}, one at a time", changed.join(", ")));
+        }
+        s.updates.extend(changed.iter().cloned());
+        Ok(changed)
     }
 
     /// Someone wants the dataflow stopped. The session reports it and waits
@@ -430,6 +509,10 @@ impl Session {
                 Reply::Stopping
             }
             Request::Trace { summary } => Reply::Trace(self.tracing.report(!summary)),
+            Request::Update { deployment, binaries } => match self.update(deployment, &binaries) {
+                Ok(nodes) => Reply::Updating(nodes),
+                Err(e) => Reply::Error(e.to_string()),
+            },
         }
     }
 
@@ -447,6 +530,7 @@ impl Session {
                     program: self.programs.get(id).cloned().unwrap_or_default(),
                     pid: info.pid,
                     state: info.state.clone(),
+                    restarts: info.restarts,
                     shm_regions: regions.len() as u32,
                     shm_held: regions.iter().filter(|r| r.refcount().load(Ordering::Relaxed) > 0).count() as u32,
                     shm_bytes: regions.iter().map(|r| r.capacity() as u64).sum(),
@@ -480,7 +564,7 @@ impl Session {
             nodes,
             links,
             coordinator: false,
-            deployment: self.deployment.clone(),
+            deployment: self.deployment.lock().unwrap().clone(),
         }
     }
 
@@ -491,113 +575,139 @@ impl Session {
             .collect()
     }
 
-    /// Starts each node in its own process group, with its output captured
-    /// and its real-time settings applied.
-    fn spawn_all(
-        self: &Arc<Self>,
-        nodes: &[NodeConfig],
-        base_dir: &Path,
-        executables: &BTreeMap<String, PathBuf>,
-    ) -> io::Result<Spawned> {
+    /// Starts a node in its own process group, with its output captured and
+    /// its real-time settings applied.
+    fn spawn_one(self: &Arc<Self>, node: &NodeConfig) -> io::Result<Child> {
         let (nodes_socket, shm_dir) = {
             let files = self.files.lock().unwrap();
-            let files = files.as_ref().unwrap();
+            let files = files.as_ref().ok_or_else(|| io::Error::other("the session is over"))?;
             (files.nodes_socket.clone(), files.shm_dir.clone())
         };
-        let mut children: Vec<(String, Child)> = Vec::new();
-        let mut output_threads = Vec::new();
-        for node in nodes {
-            let exe = match (&node.path, executables.get(&node.id)) {
-                (_, Some(exe)) => exe.clone(),
-                (Some(path), None) => base_dir.join(path),
-                (None, None) => {
-                    self.kill_all(&mut children);
-                    return Err(io::Error::other(format!("`{}` is a `build:` node but wasn't deployed", node.id)));
-                }
-            };
-            let mut command = Command::new(&exe);
-            command
-                .env(ENV_NODE_ID, &node.id)
-                .env(ENV_NODE_INDEX, self.node_index[&node.id].to_string())
-                .env(ENV_DAEMON_SOCKET, &nodes_socket)
-                .env(ENV_SHM_DIR, &shm_dir)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                // Keeps Ctrl-C in the terminal from reaching nodes directly:
-                // the session decides how they stop.
-                .process_group(0);
-            if node.rt.is_some() {
-                command.env(ENV_REALTIME, "1");
+        let exe = match (&node.path, self.executables.lock().unwrap().get(&node.id)) {
+            (_, Some(exe)) => exe.clone(),
+            (Some(path), None) => self.base_dir.join(path),
+            (None, None) => {
+                return Err(io::Error::other(format!("`{}` is a `build:` node but wasn't deployed", node.id)));
             }
-            command.args(&node.args).env(ENV_DATAFLOW, &self.dataflow_name);
-            if let Some(deployment) = &self.deployment {
-                command.env(ENV_DEPLOYMENT, deployment);
-            }
-            // SAFETY: prctl is async-signal-safe.
-            unsafe {
-                command.pre_exec(|| match libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) {
-                    -1 => Err(io::Error::last_os_error()),
-                    _ => Ok(()),
-                });
-            }
-            let mut child = match command.spawn() {
-                Ok(child) => child,
-                Err(e) => {
-                    self.kill_all(&mut children);
-                    return Err(io::Error::other(format!("failed to spawn `{}` ({}): {e}", node.id, exe.display())));
-                }
-            };
-            self.state.lock().unwrap().nodes.get_mut(&node.id).unwrap().pid = Some(child.id());
-            if let Some(rt) = &node.rt {
-                for problem in apply_realtime(child.id(), rt) {
-                    self.log("daemon", format!("`{}`: {problem}", node.id));
-                }
-            }
-
-            let capture = |pipe: Box<dyn Read + Send>| {
-                let (session, id) = (self.clone(), node.id.clone());
-                std::thread::spawn(move || {
-                    for line in BufReader::new(pipe).lines().map_while(Result::ok) {
-                        session.log(&id, line);
-                    }
-                })
-            };
-            output_threads.push(capture(Box::new(child.stdout.take().unwrap())));
-            output_threads.push(capture(Box::new(child.stderr.take().unwrap())));
-            children.push((node.id.clone(), child));
+        };
+        let mut command = Command::new(&exe);
+        command
+            .env(ENV_NODE_ID, &node.id)
+            .env(ENV_NODE_INDEX, self.node_index[&node.id].to_string())
+            .env(ENV_DAEMON_SOCKET, &nodes_socket)
+            .env(ENV_SHM_DIR, &shm_dir)
+            .env(ENV_DATAFLOW, &self.dataflow_name)
+            .args(&node.args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            // Keeps Ctrl-C in the terminal from reaching nodes directly:
+            // the session decides how they stop.
+            .process_group(0);
+        if node.rt.is_some() {
+            command.env(ENV_REALTIME, "1");
         }
-        Ok((children, output_threads))
+        if let Some(deployment) = &*self.deployment.lock().unwrap() {
+            command.env(ENV_DEPLOYMENT, deployment);
+        }
+        // SAFETY: prctl is async-signal-safe.
+        unsafe {
+            command.pre_exec(|| match libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) {
+                -1 => Err(io::Error::last_os_error()),
+                _ => Ok(()),
+            });
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|e| io::Error::other(format!("failed to spawn `{}` ({}): {e}", node.id, exe.display())))?;
+        {
+            let mut s = self.state.lock().unwrap();
+            let info = s.nodes.get_mut(&node.id).unwrap();
+            (info.pid, info.state, info.started) = (Some(child.id()), NodeState::Starting, Instant::now());
+        }
+        if let Some(rt) = &node.rt {
+            for problem in apply_realtime(child.id(), rt) {
+                self.log("daemon", format!("`{}`: {problem}", node.id));
+            }
+        }
+        let capture = |pipe: Box<dyn Read + Send>| {
+            let (session, id) = (self.clone(), node.id.clone());
+            std::thread::spawn(move || {
+                for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                    session.log(&id, line);
+                }
+            })
+        };
+        let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+        let mut threads = self.output_threads.lock().unwrap();
+        threads.push(capture(Box::new(stdout)));
+        threads.push(capture(Box::new(stderr)));
+        Ok(child)
     }
 
     /// A node's connection: registration, then nothing until it closes when
-    /// the node exits.
+    /// the node exits. A node registering once the dataflow runs (a restart)
+    /// gets its routes right away.
     fn handle_node(&self, mut stream: UnixStream) {
         let node_id = match NodeMsg::read_from(&mut stream) {
             Ok(Some(NodeMsg::Register { node_id })) => node_id,
             // The wake-up connection from `cleanup`, or a stray client.
             _ => return,
         };
-        {
+        let connection = {
             let mut s = self.state.lock().unwrap();
             if !s.expected.contains(&node_id) || s.sockets.contains_key(&node_id) {
                 s.log("daemon", format!("rejecting unknown or duplicate node `{node_id}`"));
                 return;
             }
-            let Ok(writer) = stream.try_clone() else { return };
-            s.sockets.insert(node_id.clone(), writer);
-            if s.sockets.len() == s.expected.len() {
-                let count = s.expected.len();
-                s.log("daemon", format!("all {count} local nodes registered"));
-                drop(s);
-                self.emit(Event::AllRegistered);
+            let Ok(mut writer) = stream.try_clone() else { return };
+            let connection = s.next_connection;
+            s.next_connection += 1;
+            if s.started {
+                let routes = self.node_routes.get(&node_id).cloned().unwrap_or_default();
+                let _ = DaemonMsg::Ready { routes }.write_to(&mut writer);
+                s.set_state(&node_id, NodeState::Running);
+                if s.updating.as_ref() == Some(&node_id) {
+                    s.updating = None;
+                    s.log("daemon", format!("`{node_id}` runs its new binary"));
+                }
+                s.sockets.insert(node_id.clone(), (connection, writer));
+            } else {
+                s.sockets.insert(node_id.clone(), (connection, writer));
+                if s.sockets.len() == s.expected.len() {
+                    let count = s.expected.len();
+                    s.log("daemon", format!("all {count} local nodes registered"));
+                    drop(s);
+                    self.emit(Event::AllRegistered);
+                }
             }
-        }
+            connection
+        };
         match NodeMsg::read_from(&mut stream) {
             // The node exited; `supervise` reports how.
             Ok(None) | Err(_) => {}
             Ok(Some(other)) => self.log("daemon", format!("unexpected message from `{node_id}`: {other:?}")),
         }
-        self.node_disconnected(&node_id);
+        let mut s = self.state.lock().unwrap();
+        if s.sockets.get(&node_id).is_some_and(|(c, _)| *c == connection) {
+            s.sockets.remove(&node_id);
+        }
+    }
+
+    /// Gives back the references a dead node still held, so that its
+    /// senders get their regions back.
+    fn release_held(&self, node: &str) {
+        let Ok(table) = HeldTable::open(&self.shm_dir, node) else { return };
+        let held = table.held();
+        for &(input, slot) in &held {
+            let Some(source) = self.input_sources.get(node).and_then(|s| s.get(input)) else { continue };
+            if let Ok(region) = Region::open(&shm::region_path(&self.shm_dir, source, slot)) {
+                region.refcount().fetch_sub(1, Ordering::Release);
+            }
+        }
+        table.clear();
+        if !held.is_empty() {
+            self.log("daemon", format!("released {} messages `{node}` held when it died", held.len()));
+        }
     }
 
     /// Forwards what local nodes send to other machines, until the session
@@ -711,7 +821,7 @@ impl Session {
                         }
                     }
                 }
-                Ok(Some(PeerMsg::Closed { node })) => self.node_disconnected(&node),
+                Ok(Some(PeerMsg::Closed { node })) => self.node_gone(&node),
                 Ok(None) => break,
                 Err(e) => {
                     self.log("daemon", format!("data connection from another machine failed: {e}"));
@@ -721,13 +831,12 @@ impl Session {
         }
     }
 
-    /// `node_id` (local, or on another machine) is gone: stops local nodes
-    /// that have no upstream left, and has the forwarder tell machines
+    /// `node_id` (local, or on another machine) is gone for good: stops local
+    /// nodes that have no upstream left, and has the forwarder tell machines
     /// downstream.
-    fn node_disconnected(&self, node_id: &str) {
+    fn node_gone(&self, node_id: &str) {
         {
             let mut s = self.state.lock().unwrap();
-            s.sockets.remove(node_id);
             let mut to_stop = Vec::new();
             for (id, sources) in s.upstream.iter_mut() {
                 if sources.remove(node_id) && sources.is_empty() {
@@ -744,39 +853,48 @@ impl Session {
         }
     }
 
-    /// Waits for all local nodes to exit. If one fails, kills the others.
+    /// Waits for all local nodes to exit for good, restarting those whose
+    /// policy says so. If one fails for good, kills the others.
     ///
     /// Stopping drains the dataflow: sources and nodes on cycles get `Stop`
     /// first, and each other node gets it once all its upstream nodes have
     /// exited, so no in-flight message is dropped. If that stalls for
     /// `DRAIN_TIMEOUT` (no message sent, no node gone), every node gets it. A
     /// node that ignores `Stop` gets SIGTERM, then SIGKILL.
-    fn supervise(&self, mut children: Vec<(String, Child)>) -> bool {
+    fn supervise(self: &Arc<Self>, mut children: Vec<(String, Child)>) -> bool {
         let mut ok = true;
         let mut stop_started: Option<Instant> = None;
         let mut drained = false;
         let (mut last_progress, mut last_sent) = (Instant::now(), 0);
-        while !children.is_empty() {
+        // Nodes to start again, and when.
+        let mut restarts: Vec<(Instant, String)> = Vec::new();
+        while !children.is_empty() || !restarts.is_empty() {
             let mut i = 0;
             while i < children.len() {
                 match children[i].1.try_wait() {
                     Ok(Some(status)) => {
                         let (id, _) = children.remove(i);
                         last_progress = Instant::now();
-                        let mut s = self.state.lock().unwrap();
-                        // A node we terminated did what it was asked.
-                        let terminated = s.nodes[&id].terminated && status.signal() == Some(libc::SIGTERM);
-                        let success = status.success() || terminated;
-                        s.log("daemon", format!("`{id}` exited: {status}"));
-                        s.set_state(&id, NodeState::Exited { success, detail: status.to_string() });
-                        let stopping = s.stopping;
-                        drop(s);
-                        self.emit(Event::NodeExited { node: id.clone(), success });
-                        if !success {
-                            ok = false;
-                            if !stopping {
-                                self.log("daemon", format!("stopping the dataflow because `{id}` failed"));
-                                self.kill_all(&mut children);
+                        // Whatever it held goes back to its senders, before a
+                        // new instance starts over with a fresh table.
+                        self.release_held(&id);
+                        match self.after_exit(&id, status) {
+                            Some(delay) => restarts.push((Instant::now() + delay, id)),
+                            None => {
+                                let success = matches!(
+                                    self.state.lock().unwrap().nodes[&id].state,
+                                    NodeState::Exited { success: true, .. }
+                                );
+                                self.emit(Event::NodeExited { node: id.clone(), success });
+                                self.node_gone(&id);
+                                if !success {
+                                    ok = false;
+                                    if !self.state.lock().unwrap().stopping {
+                                        self.log("daemon", format!("stopping the dataflow because `{id}` failed"));
+                                        self.kill_all(&mut children);
+                                        restarts.clear();
+                                    }
+                                }
                             }
                         }
                     }
@@ -789,9 +907,42 @@ impl Session {
                 }
             }
 
+            // Restarts that are due.
+            let now = Instant::now();
+            let (due, later): (Vec<_>, Vec<_>) = restarts.drain(..).partition(|(at, _)| *at <= now);
+            restarts = later;
+            for (_, id) in due {
+                if self.state.lock().unwrap().stopping {
+                    // Too late: count it as gone.
+                    self.state
+                        .lock()
+                        .unwrap()
+                        .set_state(&id, NodeState::Exited { success: true, detail: "not restarted".into() });
+                    self.node_gone(&id);
+                    continue;
+                }
+                match self.spawn_one(&self.configs[&id]) {
+                    Ok(child) => children.push((id, child)),
+                    Err(e) => {
+                        self.log("daemon", format!("can't restart `{id}`: {e}"));
+                        self.state
+                            .lock()
+                            .unwrap()
+                            .set_state(&id, NodeState::Exited { success: false, detail: e.to_string() });
+                        self.emit(Event::NodeExited { node: id.clone(), success: false });
+                        self.node_gone(&id);
+                        ok = false;
+                    }
+                }
+            }
+
+            self.watchdog(&mut children);
+            self.next_update(&children);
+
             if self.state.lock().unwrap().aborted && !children.is_empty() {
                 self.log("daemon", "aborting, killing all nodes".into());
                 self.kill_all(&mut children);
+                restarts.clear();
                 ok = false;
             }
             if stop_started.is_some() {
@@ -845,6 +996,94 @@ impl Session {
             std::thread::sleep(Duration::from_millis(20));
         }
         ok
+    }
+
+    /// Records a node's exit. Returns when to start it again, if it should
+    /// be: it's being updated, or its policy says so and it has restarts left
+    /// (and nothing told it to stop).
+    fn after_exit(&self, id: &str, status: std::process::ExitStatus) -> Option<Duration> {
+        let config = &self.configs[id];
+        let mut s = self.state.lock().unwrap();
+        let told_to_stop = s.bells.get(id).is_some_and(|b| b.stop_requested());
+        let (stopping, aborted) = (s.stopping, s.aborted);
+        let info = s.nodes.get_mut(id).unwrap();
+        // A node we terminated to stop it did what it was asked.
+        let terminated = info.terminated && status.signal() == Some(libc::SIGTERM);
+        let success = status.success() || terminated;
+        let replacing = std::mem::take(&mut info.replacing);
+        if info.started.elapsed() > STABLE_AFTER {
+            info.restarts = 0;
+        }
+        let wanted = replacing
+            || match config.restart {
+                Restart::Never => false,
+                Restart::OnFailure => !success,
+                Restart::Always => true,
+            };
+        let restart =
+            wanted && !stopping && !aborted && !told_to_stop && (replacing || info.restarts < config.max_restarts);
+        if !restart {
+            info.state = NodeState::Exited { success, detail: status.to_string() };
+            let gave_up = wanted && !stopping && !aborted && !told_to_stop;
+            s.log(
+                "daemon",
+                match gave_up {
+                    true => format!("`{id}` exited: {status}, after {} restarts: giving up", config.max_restarts),
+                    false => format!("`{id}` exited: {status}"),
+                },
+            );
+            return None;
+        }
+        (info.terminated, info.stop_sent, info.pid) = (false, None, None);
+        info.state = NodeState::Starting;
+        if replacing {
+            s.log("daemon", format!("`{id}` exited for the update: {status}, starting its new binary"));
+            return Some(Duration::ZERO);
+        }
+        info.restarts += 1;
+        let delay = (FIRST_BACKOFF * 2u32.saturating_pow(info.restarts - 1)).min(MAX_BACKOFF);
+        let n = info.restarts;
+        s.log("daemon", format!("`{id}` exited: {status}; restarting in {delay:?} ({n} of {})", config.max_restarts));
+        Some(delay)
+    }
+
+    /// Kills running nodes that have neither taken nor sent a message for
+    /// longer than their `watchdog_ms`, while not waiting for anything. They
+    /// count as failed: restarted if their policy says so.
+    fn watchdog(&self, children: &mut [(String, Child)]) {
+        let now = trace::now_ns();
+        for (id, child) in children.iter_mut() {
+            let Some(limit_ms) = self.configs[id].watchdog_ms else { continue };
+            let Some((activity, waiting)) = self.tracing.activity(id) else { continue };
+            let running = matches!(self.state.lock().unwrap().nodes[id].state, NodeState::Running);
+            let idle_ms = now.saturating_sub(activity) / 1_000_000;
+            if running && activity > 0 && !waiting && idle_ms > limit_ms {
+                self.log(
+                    "daemon",
+                    format!("`{id}` made no progress for {idle_ms} ms (watchdog: {limit_ms} ms), killing it"),
+                );
+                let _ = child.kill();
+            }
+        }
+    }
+
+    /// Starts replacing the next node of an update, once the previous one
+    /// runs its new binary: asks it to exit (SIGTERM); it starts again with
+    /// the new binary, and the messages queued for it wait in its channels.
+    fn next_update(&self, children: &[(String, Child)]) {
+        let mut s = self.state.lock().unwrap();
+        if s.updating.is_some() || s.stopping {
+            return;
+        }
+        while let Some(id) = s.updates.pop_front() {
+            let Some((_, child)) = children.iter().find(|(c, _)| *c == id) else { continue };
+            s.nodes.get_mut(&id).unwrap().replacing = true;
+            s.updating = Some(id.clone());
+            s.log("daemon", format!("replacing `{id}`"));
+            // SAFETY: plain syscall on a child we haven't reaped yet.
+            unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+            return;
+        }
     }
 
     fn kill_all(&self, children: &mut Vec<(String, Child)>) {

@@ -1,0 +1,25 @@
+# Restarts and the watchdog, on purpose: `flaky` crashes at every 250th count
+# and `hang` gets stuck at 700. Both come back; counts sent while they're
+# down wait in their channels. `checker` says at the end which were lost: the
+# ones each node held when it died.
+nodes:
+  - id: counter
+    build: counter
+
+  - id: flaky
+    build: flaky
+    restart: on-failure
+    inputs:
+      count: counter/count
+
+  - id: hang
+    build: hang
+    restart: on-failure
+    watchdog_ms: 500
+    inputs:
+      count: flaky/count
+
+  - id: checker
+    build: checker
+    inputs:
+      count: hang/count

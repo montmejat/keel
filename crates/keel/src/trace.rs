@@ -130,7 +130,7 @@ impl Summary {
 
 // The stats file: a header, one slot per input, then one per output.
 //
-//   [inputs: u64][outputs: u64][padding to 64]
+//   [inputs: u64][outputs: u64][activity: u64][waiting: u64][padding to 64]
 //   input:  [name_len: u64][name: 56 bytes][max_latency: u64][max_processing: u64]
 //           [padding to 128][latency: BUCKETS × u64][processing: BUCKETS × u64]
 //   output: [name_len: u64][name: 56 bytes][messages: u64][bytes: u64][padding to 128]
@@ -215,6 +215,17 @@ impl StatsWriter {
         Some(slot)
     }
 
+    /// The node just took or sent a message.
+    pub fn touch(&self, now_ns: u64) {
+        self.map.u64_at(16).store(now_ns, Ordering::Relaxed);
+    }
+
+    /// The node is blocked waiting for others (input, or free regions), as
+    /// opposed to working: a watchdog shouldn't count that as stuck.
+    pub fn set_waiting(&self, waiting: bool) {
+        self.map.u64_at(24).store(waiting as u64, Ordering::Relaxed);
+    }
+
     pub fn record_output(&self, slot: usize, bytes: u64) {
         let base = output_offset(slot);
         self.map.u64_at(base + 64).fetch_add(1, Ordering::Relaxed);
@@ -250,6 +261,11 @@ pub struct StatsReader {
 impl StatsReader {
     pub fn open(dir: &Path, node_id: &str) -> io::Result<Self> {
         Ok(Self { map: Mapping::open(&stats_path(dir, node_id), STATS_LEN)? })
+    }
+
+    /// When the node last took or sent a message, and whether it's waiting.
+    pub fn activity(&self) -> (u64, bool) {
+        (self.map.u64_at(16).load(Ordering::Relaxed), self.map.u64_at(24).load(Ordering::Relaxed) != 0)
     }
 
     pub fn input_name(&self, slot: usize) -> Option<String> {

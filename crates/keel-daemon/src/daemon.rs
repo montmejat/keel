@@ -105,7 +105,7 @@ fn idle_reply(request: Request) -> Reply {
             deployment: None,
         }),
         Request::Logs { .. } => Reply::Logs(control::Logs { lines: Vec::new(), next: 0 }),
-        Request::Stop | Request::Trace { .. } => Reply::Error("no dataflow is running".into()),
+        Request::Stop | Request::Trace { .. } | Request::Update { .. } => Reply::Error("no dataflow is running".into()),
     }
 }
 

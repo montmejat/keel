@@ -24,3 +24,4 @@ Superseded records stay, with a link to what replaced them.
 | [0016](0016-packaging-and-deployment.md) | Packaging and deployment: reproducible static binaries, stored by hash | Proposed |
 | [0017](0017-recording-and-replay.md) | Recording and replay: a recorder node, a flat file, replay in place | Proposed |
 | [0018](0018-provisioning.md) | Provisioning over SSH, a systemd service, and a shared token | Proposed |
+| [0019](0019-lifecycle.md) | Lifecycle: restart policies, a watchdog, rolling updates | Proposed |

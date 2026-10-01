@@ -331,7 +331,10 @@ impl App {
         };
         let rows = status.nodes.iter().map(|node| {
             let (rate_in, rate_out) = self.node_rates(&node.id, &status.links);
-            let (state, state_color) = state_label(&node.state);
+            let (mut state, state_color) = state_label(&node.state);
+            if node.restarts > 0 {
+                state.push_str(&format!(" ↻{}", node.restarts));
+            }
             let shm = match node.shm_regions {
                 0 => Span::styled("—", MUTED),
                 n => Span::raw(format!("{}/{n} held  {}", node.shm_held, fmt::bytes(node.shm_bytes as f64))),
@@ -358,7 +361,7 @@ impl App {
                 Constraint::Length(id_width),
                 Constraint::Length(program_width),
                 Constraint::Length(machine_width),
-                Constraint::Length(11),
+                Constraint::Length(14),
                 Constraint::Length(8),
                 Constraint::Length(8),
                 Constraint::Length(8),

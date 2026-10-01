@@ -33,6 +33,12 @@ pub enum Request {
         #[serde(default)]
         summary: bool,
     },
+    /// Switch to a new deployment of the same dataflow: nodes whose binary
+    /// changed are restarted with the new one, one at a time.
+    Update {
+        deployment: Option<String>,
+        binaries: BTreeMap<String, String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +48,8 @@ pub enum Reply {
     Logs(Logs),
     Stopping,
     Trace(TraceReport),
+    /// The nodes an update replaces.
+    Updating(Vec<String>),
     Error(String),
 }
 
@@ -76,6 +84,9 @@ pub struct NodeStatus {
     pub program: String,
     pub pid: Option<u32>,
     pub state: NodeState,
+    /// Times it was started again after exiting.
+    #[serde(default)]
+    pub restarts: u32,
     /// Shared-memory regions this node sends from.
     pub shm_regions: u32,
     /// Of those, the ones still being read.
@@ -295,6 +306,17 @@ impl Client {
     fn trace_report(&mut self, summary: bool) -> io::Result<TraceReport> {
         match self.request(&Request::Trace { summary })? {
             Reply::Trace(report) => Ok(report),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    pub fn update(
+        &mut self,
+        deployment: Option<String>,
+        binaries: BTreeMap<String, String>,
+    ) -> io::Result<Vec<String>> {
+        match self.request(&Request::Update { deployment, binaries })? {
+            Reply::Updating(nodes) => Ok(nodes),
             other => Err(unexpected(other)),
         }
     }

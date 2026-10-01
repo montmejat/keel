@@ -408,15 +408,17 @@ pub fn gc(keep: usize) -> io::Result<()> {
             }
         }
     }
+    let mut forgotten = 0;
     for d in forget.iter().filter(|d| !unreachable.contains(&d.id)) {
         fs::remove_file(registry.dir.join(&d.name).join(format!("{}.json", d.id)))?;
+        forgotten += 1;
     }
     // Also whatever this machine's store holds that nothing pins.
     let (blobs, bytes) = Store::open()?.gc()?;
     if blobs > 0 {
         say(format!("this machine: removed {blobs} more unused binaries, {}", human_bytes(bytes)));
     }
-    say(format!("forgot {} deployments", forget.len() - unreachable.len()));
+    say(format!("forgot {forgotten} deployments"));
     Ok(())
 }
 

@@ -14,7 +14,7 @@ Decisions and their reasoning live in [`decisions/`](decisions/).
 | Transport | How do bytes move? | Shared memory on one machine (zero-copy), TCP between machines |
 | Real time | Can a control loop meet its deadlines? | SCHED_FIFO, pinned CPUs, no daemon on the data path |
 | Runtime | Who runs the nodes on a machine? | A per-machine daemon |
-| Lifecycle | Start, stop, crash, restart | Ordered startup and shutdown, restart policies |
+| Lifecycle | Start, stop, crash, restart | Ordered startup and shutdown, restart policies, a watchdog, rolling updates |
 | Coordination | Which node runs where? | A coordinator that assigns nodes to daemons |
 | Packaging | What exactly gets shipped? | Reproducible static binaries, identified by their hash |
 | Deployment | How does software reach a machine? | `keel deploy` pushes missing hashes to a store on each daemon; rollback and cleanup |
@@ -118,7 +118,9 @@ overlaps with systemd.
     runs the daemon as a systemd service with real-time limits, and shares a
     token every connection must present
     ([0018](decisions/0018-provisioning.md)).
-11. **Lifecycle polish**: restart policies, health checks, rolling updates.
+11. **Lifecycle polish** (done): restart policies with backoff, a progress
+    watchdog, rolling updates of a running dataflow
+    ([0019](decisions/0019-lifecycle.md)).
 
 ## Benchmarks
 

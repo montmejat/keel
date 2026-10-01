@@ -42,6 +42,36 @@ pub struct NodeConfig {
     /// Real-time scheduling for this node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rt: Option<Realtime>,
+    /// Whether to start the node again when it exits.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub restart: Restart,
+    /// Restarts allowed before giving up on the node (and the dataflow).
+    #[serde(default = "default_max_restarts")]
+    pub max_restarts: u32,
+    /// Kill the node (then maybe restart it) when it has neither taken nor
+    /// sent a message for this long while not waiting for anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watchdog_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Restart {
+    /// An exit is final; a failure stops the dataflow.
+    #[default]
+    Never,
+    /// Restart after a failure (or a watchdog kill), not after a clean exit.
+    OnFailure,
+    /// Restart after any exit, until the dataflow stops.
+    Always,
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}
+
+fn default_max_restarts() -> u32 {
+    5
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,6 +260,16 @@ mod tests {
         assert_eq!(graph.keep[&("b".into(), "x".into())], Keep::All);
         assert_eq!(graph.keep[&("b".into(), "y".into())], Keep::Latest);
         assert_eq!(dataflow.nodes[0].rt.as_ref().unwrap().cpus, [2, 3]);
+        assert_eq!(dataflow.nodes[0].restart, Restart::Never);
+    }
+
+    #[test]
+    fn reads_lifecycle_settings() {
+        let yaml = "nodes: [{ id: a, path: a, restart: on-failure, max_restarts: 2, watchdog_ms: 500 }]";
+        let dataflow = Dataflow::parse(yaml).unwrap();
+        let node = &dataflow.nodes[0];
+        assert_eq!((node.restart, node.max_restarts, node.watchdog_ms), (Restart::OnFailure, 2, Some(500)));
+        assert!(Dataflow::parse("nodes: [{ id: a, path: a, restart: sometimes }]").is_err());
     }
 
     #[test]

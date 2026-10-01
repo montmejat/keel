@@ -164,6 +164,21 @@ real-time scheduling:
       camera: { source: camera/frames, keep: latest }
 ```
 
+Nodes can also be restarted when they fail, watched for being stuck, and
+replaced in a running dataflow (`examples/lifecycle.yml` shows the first
+two, on purpose):
+
+```yaml
+  - id: detector
+    build: detector
+    restart: on-failure     # or always; max_restarts: 5, backoff 100 ms → 5 s
+    watchdog_ms: 500        # killed (then restarted) after 500 ms without progress
+```
+
+```sh
+keel update examples/pipeline-two-machines.yml   # new code in, node by node
+```
+
 Real-time priority needs the privilege: an rtprio limit (e.g.
 `/etc/security/limits.d/keel.conf` with `<user> - rtprio 95`), or
 `CAP_SYS_NICE`. Without it the daemon says so, and the rest applies.

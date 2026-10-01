@@ -32,6 +32,13 @@ enum Command {
     /// Build a dataflow's nodes for their machines and ship them, without
     /// running it
     Deploy { dataflow: PathBuf },
+    /// Deploy a new version of a running dataflow into it: nodes whose binary
+    /// changed are restarted with the new one, one at a time
+    Update {
+        dataflow: PathBuf,
+        #[arg(long)]
+        pid: Option<u32>,
+    },
     /// Run a deployment: a dataflow name's current one, or one by id
     Start { deployment: String },
     /// List the deployments made from this machine
@@ -155,6 +162,7 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             return Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE });
         }
         Command::History { name } => history(name.as_deref())?,
+        Command::Update { dataflow, pid } => update(&dataflow, pick(pid)?)?,
         Command::Rollback { name, id } => {
             let d = Registry::open()?.rollback(&name, id.as_deref())?;
             println!("`{name}` is now {} ({}); `keel start {name}` runs it", d.id, fmt::age(d.created));
@@ -233,6 +241,38 @@ fn ps() -> Result<(), Box<dyn Error>> {
             status.machine.as_deref().unwrap_or(if status.coordinator { "(all)" } else { "-" }),
             status.dataflow.as_ref().map_or("-".into(), |d| d.display().to_string())
         );
+    }
+    Ok(())
+}
+
+/// Rolls a new deployment into a running dataflow.
+fn update(path: &std::path::Path, pid: u32) -> Result<(), Box<dyn Error>> {
+    let mut client = Client::connect(pid)?;
+    let status = client.status()?;
+    let source = std::fs::canonicalize(path)?;
+    if status.dataflow.as_ref() != Some(&source) {
+        let running = status.dataflow.map_or("nothing".into(), |d| d.display().to_string());
+        return Err(format!("the running dataflow is {running}, not {}", source.display()).into());
+    }
+    let running =
+        status.deployment.ok_or("this dataflow wasn't deployed (no `build:` nodes): stop it and run it again")?;
+    let old = Registry::open()?.find(&running)?;
+    let new_dataflow = keel_daemon::dataflow::Dataflow::load(&source)?;
+    if serde_json::to_string(&old.dataflow)? != serde_json::to_string(&new_dataflow)? {
+        return Err(
+            "the dataflow itself changed (nodes, inputs, machines or settings): stop it and run it again".into()
+        );
+    }
+    let new = packaging::deploy(&source)?;
+    if new.id == running {
+        println!("{running} is already running: nothing changed");
+        return Ok(());
+    }
+    match client.update(Some(new.id.clone()), new.binaries)?[..] {
+        [] => println!("now running {}; no node's binary changed", new.id),
+        ref nodes => {
+            println!("now rolling {} into the dataflow: replacing {}, one at a time", new.id, nodes.join(", "))
+        }
     }
     Ok(())
 }

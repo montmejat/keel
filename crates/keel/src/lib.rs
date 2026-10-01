@@ -28,7 +28,7 @@ use std::sync::Arc;
 use channel::{Bell, Channel, Target, DAEMON};
 pub use periodic::Periodic;
 use protocol::{DaemonMsg, NodeMsg, ENV_DAEMON_SOCKET, ENV_NODE_ID, ENV_REALTIME, ENV_SHM_DIR};
-use shm::{Pool, Region};
+use shm::{HeldTable, Pool, Region};
 use trace::{Context, EventWriter, RawEvent, StatsWriter, ENV_NODE_INDEX};
 
 pub enum Event {
@@ -52,6 +52,8 @@ pub struct Sample {
     input: usize,
     taken_ns: u64,
     tracer: Arc<Tracer>,
+    /// Its entry in the held table.
+    held: Option<usize>,
 }
 
 impl Sample {
@@ -81,6 +83,9 @@ impl Drop for Sample {
         let span = self.context.span;
         let _ = self.tracer.holding.compare_exchange(span, 0, Ordering::Relaxed, Ordering::Relaxed);
         self.region.refcount().fetch_sub(1, Ordering::Release);
+        if let Some(entry) = self.held {
+            self.tracer.held.release(entry);
+        }
     }
 }
 
@@ -88,6 +93,7 @@ impl Drop for Sample {
 /// release from wherever they're dropped.
 struct Tracer {
     stats: StatsWriter,
+    held: HeldTable,
     events: EventWriter,
     /// Span of the latest input received, while its sample is alive: what the
     /// next output is caused by.
@@ -148,6 +154,7 @@ impl Node {
         let tracer = Arc::new(Tracer {
             stats: StatsWriter::create(&shm_dir, &id)?,
             events: EventWriter::create(&shm_dir, &id)?,
+            held: HeldTable::create(&shm_dir, &id)?,
             holding: AtomicU64::new(0),
         });
         let mut socket = UnixStream::connect(env(ENV_DAEMON_SOCKET)?)?;
@@ -279,12 +286,16 @@ impl Node {
         cause: Option<Context>,
         fill: impl FnOnce(&mut [u8]),
     ) -> io::Result<()> {
-        let slot = self.pool.acquire(len)?;
+        self.tracer.stats.set_waiting(true);
+        let slot = self.pool.acquire(len);
+        self.tracer.stats.set_waiting(false);
+        let slot = slot?;
         fill(self.pool.payload_mut(slot, len));
 
         let span = trace::span_id(self.index, self.sent);
         self.sent += 1;
         let now = trace::now_ns();
+        self.tracer.stats.touch(now);
         let context = match cause {
             Some(cause) => {
                 Context { span, trace: cause.trace, parent: cause.span, published_ns: now, sampled: cause.sampled }
@@ -329,7 +340,9 @@ impl Node {
             if stop {
                 return Ok(Event::Stop);
             }
+            self.tracer.stats.set_waiting(true);
             self.bell.wait(seen, None);
+            self.tracer.stats.set_waiting(false);
         }
     }
 
@@ -377,6 +390,8 @@ impl Node {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "payload is larger than its region"));
         }
         let taken_ns = trace::now_ns();
+        self.tracer.stats.touch(taken_ns);
+        let held = self.tracer.held.hold(i, slot as u32);
         let context = region.context();
         self.tracer.stats.record_latency(i, taken_ns.saturating_sub(context.published_ns));
         if context.sampled {
@@ -384,7 +399,7 @@ impl Node {
         }
         self.tracer.holding.store(context.span, Ordering::Relaxed);
         self.last_input = context;
-        let data = Sample { region, len, context, input: i, taken_ns, tracer: self.tracer.clone() };
+        let data = Sample { region, len, context, input: i, taken_ns, tracer: self.tracer.clone(), held };
         Ok(Event::Input { id: input.id, data })
     }
 }

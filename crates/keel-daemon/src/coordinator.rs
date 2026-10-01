@@ -39,7 +39,7 @@ const LOG_CAPACITY: usize = 10_000;
 
 struct Coordinator {
     name: PathBuf,
-    deployment: Option<String>,
+    deployment: Mutex<Option<String>>,
     /// Each node's position in the dataflow, to list them in that order.
     order: HashMap<String, usize>,
     start: Instant,
@@ -72,7 +72,7 @@ pub(crate) fn run(
 
     let coordinator = Arc::new(Coordinator {
         name: name.clone(),
-        deployment: deployment.clone(),
+        deployment: Mutex::new(deployment.clone()),
         order: dataflow.nodes.iter().enumerate().map(|(i, n)| (n.id.clone(), i)).collect(),
         start: Instant::now(),
         daemons: Mutex::new(BTreeMap::new()),
@@ -290,6 +290,19 @@ impl Coordinator {
                 Reply::Stopping
             }
             Request::Trace { summary } => Reply::Trace(self.trace(summary)),
+            Request::Update { deployment, binaries } => {
+                let request = Request::Update { deployment: deployment.clone(), binaries };
+                let mut nodes = Vec::new();
+                for (machine, reply) in self.ask_all(request) {
+                    match reply {
+                        Reply::Updating(updated) => nodes.extend(updated),
+                        Reply::Error(e) => return Reply::Error(format!("`{machine}`: {e}")),
+                        _ => {}
+                    }
+                }
+                *self.deployment.lock().unwrap() = deployment;
+                Reply::Updating(nodes)
+            }
         }
     }
 
@@ -303,7 +316,7 @@ impl Coordinator {
             nodes: Vec::new(),
             links: Vec::new(),
             coordinator: true,
-            deployment: self.deployment.clone(),
+            deployment: self.deployment.lock().unwrap().clone(),
         };
         // Node ids are unique across machines, and nodes carry their machine:
         // endpoints don't need `@machine` here.

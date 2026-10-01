@@ -129,6 +129,13 @@ impl Tracing {
         stats.flat_map(|(node, stats)| stats.outputs().into_iter().map(|(o, n, b)| (node.clone(), o, n, b))).collect()
     }
 
+    /// When `node` last took or sent a message, and whether it's waiting.
+    pub fn activity(&self, node: &str) -> Option<(u64, bool)> {
+        let mut inner = self.inner.lock().unwrap();
+        self.open_files(&mut inner);
+        Some(inner.files.get(node)?.stats.as_ref()?.activity())
+    }
+
     /// Messages sent by local nodes so far: moves as long as the dataflow does.
     pub fn messages_sent(&self) -> u64 {
         self.outputs().iter().map(|(_, _, n, _)| n).sum()

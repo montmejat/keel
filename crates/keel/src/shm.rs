@@ -217,6 +217,55 @@ impl Drop for Mapping {
     }
 }
 
+/// The samples a node holds, so that the daemon can release them if the node
+/// dies holding them: otherwise each would cost its sender a region for
+/// good. One word per entry, `(input + 1) << 32 | (slot + 1)`, 0 when free;
+/// written by the node only.
+pub struct HeldTable {
+    map: Mapping,
+}
+
+pub const HELD_ENTRIES: usize = 64;
+
+pub fn held_path(dir: &Path, node_id: &str) -> PathBuf {
+    dir.join(format!("{node_id}.held"))
+}
+
+impl HeldTable {
+    pub fn create(dir: &Path, node_id: &str) -> io::Result<Self> {
+        Ok(Self { map: Mapping::create(&held_path(dir, node_id), HELD_ENTRIES * 8)? })
+    }
+
+    pub fn open(dir: &Path, node_id: &str) -> io::Result<Self> {
+        Ok(Self { map: Mapping::open(&held_path(dir, node_id), HELD_ENTRIES * 8)? })
+    }
+
+    /// Notes a held `slot` of input `input`. `None` when the table is full:
+    /// that sample goes unreleased if the node dies holding it.
+    pub fn hold(&self, input: usize, slot: u32) -> Option<usize> {
+        let word = ((input as u64 + 1) << 32) | (slot as u64 + 1);
+        (0..HELD_ENTRIES)
+            .find(|&i| self.map.u64_at(i * 8).compare_exchange(0, word, Ordering::Release, Ordering::Relaxed).is_ok())
+    }
+
+    pub fn release(&self, entry: usize) {
+        self.map.u64_at(entry * 8).store(0, Ordering::Release);
+    }
+
+    /// `(input, slot)` of every sample still held.
+    pub fn held(&self) -> Vec<(usize, u32)> {
+        (0..HELD_ENTRIES)
+            .map(|i| self.map.u64_at(i * 8).load(Ordering::Acquire))
+            .filter(|&w| w != 0)
+            .map(|w| ((w >> 32) as usize - 1, (w & 0xffff_ffff) as u32 - 1))
+            .collect()
+    }
+
+    pub fn clear(&self) {
+        (0..HELD_ENTRIES).for_each(|i| self.release(i));
+    }
+}
+
 /// The regions a node sends from.
 pub struct Pool {
     dir: PathBuf,
@@ -225,8 +274,20 @@ pub struct Pool {
 }
 
 impl Pool {
+    /// Adopts the regions a previous instance of this node left (a restart):
+    /// receivers may still hold some, or have them queued, and their
+    /// reference counts say which are free.
     pub fn new(dir: PathBuf, node_id: String) -> Self {
-        Self { dir, node_id, slots: Vec::new() }
+        let mut slots = Vec::new();
+        for slot in 0..MAX_SLOTS as u32 {
+            let path = region_path(&dir, &node_id, slot);
+            let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else { break };
+            match Region::map(&file) {
+                Ok(region) => slots.push((file, region)),
+                Err(_) => break,
+            }
+        }
+        Self { dir, node_id, slots }
     }
 
     /// Finds a free region with room for `len` bytes, growing or creating
@@ -312,6 +373,11 @@ mod tests {
         pool.publish(a);
         let b = pool.acquire(10).unwrap();
         assert_ne!(a, b, "a published slot must not be handed out again");
+
+        // A restarted sender adopts its regions, the held one included.
+        let adopted = Pool::new(dir.clone(), "n".into());
+        assert_eq!(adopted.slots.len(), pool.slots.len());
+        assert_eq!(adopted.region(a).refcount().load(Ordering::Relaxed), 1);
 
         // Another process maps the same region and releases it.
         let reader = Region::open(&region_path(&dir, "n", a)).unwrap();
