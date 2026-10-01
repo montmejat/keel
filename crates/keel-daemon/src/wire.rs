@@ -1,15 +1,22 @@
 //! What the coordinator and the daemons say to each other, as JSON lines over
 //! TCP.
 //!
-//! A TCP connection to a daemon starts with one byte saying what it is:
-//! [`COORDINATOR`], then JSON lines both ways; [`PEER`], then a stream of
-//! `keel::protocol::PeerMsg` frames carrying data between machines; or
-//! [`BLOB`], then a [`BlobHeader`] line and a binary for the store, answered
-//! with one [`Event`] line.
+//! A TCP connection to a daemon starts with one byte saying what it is, then
+//! the cluster token on a line (see [`open`]). Then, for [`COORDINATOR`],
+//! JSON lines both ways; for [`PEER`], a stream of `keel::protocol::PeerMsg`
+//! frames carrying data between machines; for [`BLOB`], a [`BlobHeader`]
+//! line and a binary for the store, answered with one [`Event`] line.
+//!
+//! The token is a shared secret that `keel provision` puts on every machine
+//! (`~/.config/keel/token`). A daemon that has one refuses connections that
+//! don't present it. It authenticates, it doesn't encrypt: on an untrusted
+//! network, run keel over a VPN (WireGuard) or SSH tunnels.
 
 use std::collections::BTreeMap;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -121,6 +128,74 @@ pub enum Event {
         id: u64,
         reply: Reply,
     },
+}
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `$XDG_CONFIG_HOME/keel/token`, or `~/.config/keel/token`.
+pub fn token_path() -> PathBuf {
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    std::env::var_os("XDG_CONFIG_HOME").map_or(home.join(".config"), PathBuf::from).join("keel/token")
+}
+
+pub fn load_token() -> Option<String> {
+    let token = std::fs::read_to_string(token_path()).ok()?;
+    Some(token.trim().to_owned()).filter(|t| !t.is_empty())
+}
+
+/// This machine's token, created (256 random bits, readable by us only) if
+/// there isn't one yet.
+pub fn ensure_token() -> io::Result<String> {
+    if let Some(token) = load_token() {
+        return Ok(token);
+    }
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let path = token_path();
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
+    file.write_all(format!("{token}\n").as_bytes())?;
+    Ok(token)
+}
+
+/// Connects to a daemon for a connection of `kind`, presenting our token.
+pub fn open(address: &str, kind: u8) -> io::Result<TcpStream> {
+    let mut last_error = io::Error::other("address resolves to nothing");
+    for addr in address.to_socket_addrs()? {
+        match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
+            Ok(mut stream) => {
+                stream.set_nodelay(true)?;
+                stream.write_all(&[kind])?;
+                stream.write_all(format!("{}\n", load_token().unwrap_or_default()).as_bytes())?;
+                return Ok(stream);
+            }
+            Err(e) => last_error = e,
+        }
+    }
+    Err(io::Error::new(last_error.kind(), format!("can't reach the daemon at {address}: {last_error}")))
+}
+
+/// The daemon's side: reads the token line and checks it against `expected`.
+pub fn check_token(stream: &mut TcpStream, expected: Option<&str>) -> io::Result<()> {
+    // Byte by byte, bounded: whatever follows belongs to the connection.
+    let mut line = Vec::new();
+    let mut byte = [0u8];
+    loop {
+        stream.read_exact(&mut byte)?;
+        if byte[0] == b'\n' || line.len() > 128 {
+            break;
+        }
+        line.push(byte[0]);
+    }
+    let Some(expected) = expected else { return Ok(()) };
+    // Constant time: how much matched mustn't show in how long it took.
+    let same = line.len() == expected.len() && line.iter().zip(expected.bytes()).fold(0, |d, (a, b)| d | (a ^ b)) == 0;
+    match same {
+        true => Ok(()),
+        false => Err(io::Error::new(io::ErrorKind::PermissionDenied, "wrong or missing token")),
+    }
 }
 
 pub fn write_json(w: &mut impl Write, value: &impl Serialize) -> io::Result<()> {

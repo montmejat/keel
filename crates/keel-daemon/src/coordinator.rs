@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::{self, BufReader, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,7 +27,6 @@ use crate::runtime::RuntimeDir;
 use crate::signals;
 use crate::wire::{self, Event, ToDaemon};
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a control request waits for every daemon's answer.
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 /// Clock sync: a burst of pings at start, then one per second, keeping the
@@ -102,8 +101,7 @@ pub(crate) fn run(
                 .collect(),
             deployment: deployment.clone(),
         };
-        let stream = connect(address).and_then(|mut stream| {
-            stream.write_all(&[wire::COORDINATOR])?;
+        let stream = wire::open(address, wire::COORDINATOR).and_then(|mut stream| {
             wire::write_json(&mut stream, &spawn)?;
             Ok(stream)
         });
@@ -406,18 +404,4 @@ impl SpanRecord {
             }
         }
     }
-}
-
-fn connect(address: &str) -> io::Result<TcpStream> {
-    let mut last_error = io::Error::other("address resolves to nothing");
-    for address in address.to_socket_addrs()? {
-        match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
-            Ok(stream) => {
-                stream.set_nodelay(true)?;
-                return Ok(stream);
-            }
-            Err(e) => last_error = e,
-        }
-    }
-    Err(last_error)
 }

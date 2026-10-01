@@ -39,6 +39,19 @@ In another terminal:
 
 ### Across machines
 
+Make a machine a keel machine (it needs SSH access, systemd, and ideally
+passwordless sudo, for real-time limits):
+
+```sh
+keel provision pi            # as in your ~/.ssh/config; run from this repo
+keel provision --remove pi   # undo it
+```
+
+It builds keel for the machine, installs it, runs the daemon as a systemd
+service, and shares a token that every connection to a daemon must present.
+The token authenticates but doesn't encrypt: use a VPN (WireGuard) on an
+untrusted network.
+
 List machines in the dataflow and place each node on one
 (`examples/pipeline-two-machines.yml`), start a daemon per machine, then run
 it from the machine with the sources. keel builds each node for its
@@ -99,8 +112,8 @@ keel export <file> dataset/ --channel brightness --from 10 --to 20
 ```
 
 Or with each machine in its own container (Podman):
-`examples/containers/run.sh`. Daemons have no authentication: anyone who
-can reach one can run programs through it, so only listen on trusted networks.
+`examples/containers/run.sh`. A daemon started by hand without a token (as
+in these examples) accepts any connection: only on trusted networks.
 
 ### Where the time goes
 

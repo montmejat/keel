@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, BufReader, Write};
+use std::io::{self, BufReader};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -164,8 +164,16 @@ pub fn build_here(dataflow: &Dataflow, base_dir: &Path) -> io::Result<BTreeMap<S
     Ok(nodes.into_iter().map(|(id, bin)| (id.clone(), dir.join(bin))).collect())
 }
 
+/// A daemon's target, and how many binaries (and bytes) its store holds.
+pub fn hello(address: &str) -> io::Result<(String, u64, u64)> {
+    match Remote::connect(address)?.ask(&ToDaemon::Hello)? {
+        Event::Hello { target, blobs, bytes } => Ok((target, blobs, bytes)),
+        other => Err(unexpected(address, other)),
+    }
+}
+
 /// Cargo's workspace root for the dataflow's directory.
-fn workspace_root(dir: &Path) -> io::Result<PathBuf> {
+pub fn workspace_root(dir: &Path) -> io::Result<PathBuf> {
     let out = Command::new("cargo")
         .args(["locate-project", "--workspace", "--message-format", "plain"])
         .current_dir(dir)
@@ -183,7 +191,7 @@ fn workspace_root(dir: &Path) -> io::Result<PathBuf> {
 /// Builds `bins` for `target`, reproducibly: release, locked dependencies,
 /// static, linked by rust-lld, every local path remapped and debug info
 /// stripped. Returns the directory holding the binaries.
-fn build(workspace: &Path, target: &str, bins: &[&str]) -> io::Result<PathBuf> {
+pub(crate) fn build(workspace: &Path, target: &str, bins: &[&str]) -> io::Result<PathBuf> {
     let target_dir = workspace.join("target").join("keel");
     let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
     let cargo_home = std::env::var_os("CARGO_HOME").map_or(home.join(".cargo"), PathBuf::from);
@@ -220,9 +228,8 @@ fn rustc_version() -> String {
 
 /// Sends one binary over its own connection to a daemon.
 fn upload(address: &str, hash: &str, file: &Path) -> io::Result<()> {
-    let mut stream = TcpStream::connect(address)?;
+    let mut stream = wire::open(address, wire::BLOB)?;
     let len = fs::metadata(file)?.len();
-    stream.write_all(&[wire::BLOB])?;
     wire::write_json(&mut stream, &wire::BlobHeader { hash: hash.to_owned(), len })?;
     io::copy(&mut fs::File::open(file)?, &mut stream)?;
     match wire::read_json(&mut BufReader::new(stream))? {
@@ -241,9 +248,7 @@ struct Remote {
 
 impl Remote {
     fn connect(address: &str) -> io::Result<Self> {
-        let mut stream = TcpStream::connect(address)
-            .map_err(|e| io::Error::new(e.kind(), format!("can't reach the daemon at {address}: {e}")))?;
-        stream.write_all(&[wire::COORDINATOR])?;
+        let stream = wire::open(address, wire::COORDINATOR)?;
         Ok(Self { address: address.to_owned(), reader: BufReader::new(stream.try_clone()?), stream })
     }
 

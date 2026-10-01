@@ -27,6 +27,8 @@ use crate::wire::{self, BlobHeader, Event, ToDaemon};
 
 struct Daemon {
     runtime_dir: PathBuf,
+    /// Connections must present it, when there is one.
+    token: Option<String>,
     store: Store,
     /// The dataflow being run, if any.
     session: Mutex<Option<Arc<Session>>>,
@@ -42,7 +44,14 @@ pub fn serve(listen: &str) -> io::Result<()> {
 
     let store = Store::open()?;
     let (blobs, bytes) = store.usage();
-    let daemon = Arc::new(Daemon { runtime_dir: runtime.dir.clone(), store, session: Mutex::new(None) });
+    let token = wire::load_token();
+    if token.is_none() {
+        eprintln!(
+            "[daemon] no token in {}: accepting any connection (`keel provision` sets one up)",
+            wire::token_path().display()
+        );
+    }
+    let daemon = Arc::new(Daemon { runtime_dir: runtime.dir.clone(), token, store, session: Mutex::new(None) });
     {
         let daemon = daemon.clone();
         control::serve(control_listener, move |request| match daemon.current() {
@@ -111,6 +120,13 @@ impl Daemon {
             return;
         }
         let _ = stream.set_nodelay(true);
+        if let Err(e) = wire::check_token(&mut stream, self.token.as_deref()) {
+            let peer = stream.peer_addr().map_or("?".into(), |a| a.to_string());
+            eprintln!("[daemon] refused a connection from {peer}: {e}");
+            let message = format!("{e}: this daemon's token (in its {}) isn't ours", wire::token_path().display());
+            let _ = wire::write_json(&mut stream, &Event::Error { message });
+            return;
+        }
         match kind[0] {
             wire::COORDINATOR => {
                 if let Err(e) = self.serve_coordinator(stream) {

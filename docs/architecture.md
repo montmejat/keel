@@ -76,6 +76,9 @@ keel leans on the kernel and on Linux conventions instead of reinventing them:
 | Binaries that run anywhere | Static musl builds, linked by `rust-lld` |
 | Naming software | SHA-256 of the binary |
 | Switching versions atomically | A symlink replaced with `rename(2)` |
+| Bootstrapping a machine | `ssh`, piping the binary through its stdin |
+| Running the daemon | A systemd unit (`LimitRTPRIO`, `LimitMEMLOCK`); logs in the journal |
+| Authenticating connections | A 256-bit token from `/dev/urandom`, shared by `keel provision` |
 | Trace data out of the nodes | Lock-free rings and counters in `/dev/shm` files |
 | Aligning machines' clocks | NTP's four-timestamp exchange, over the coordinator's own connection |
 
@@ -111,7 +114,10 @@ overlaps with systemd.
    deployment that produced it, `keel replay`, `keel export` to datasets.
 9. **Cluster TUI** (done): `keel top` through the coordinator: the whole graph
    across machines, latency per link, traces, deployed version, recordings.
-10. **Provisioning**: SSH bootstrap of a fresh machine.
+10. **Provisioning** (done): `keel provision <host>` over SSH installs keel,
+    runs the daemon as a systemd service with real-time limits, and shares a
+    token every connection must present
+    ([0018](decisions/0018-provisioning.md)).
 11. **Lifecycle polish**: restart policies, health checks, rolling updates.
 
 ## Benchmarks

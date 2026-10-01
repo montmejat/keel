@@ -368,11 +368,8 @@ impl Session {
         machines.dedup();
         for machine in machines {
             let address = &self.addresses[machine];
-            let mut stream = TcpStream::connect(address).map_err(|e| {
-                io::Error::other(format!("can't reach the daemon of machine `{machine}` at {address}: {e}"))
-            })?;
-            stream.set_nodelay(true)?;
-            stream.write_all(&[wire::PEER])?;
+            let stream =
+                wire::open(address, wire::PEER).map_err(|e| io::Error::other(format!("machine `{machine}`: {e}")))?;
             self.peers.lock().unwrap().insert(machine.clone(), Arc::new(Mutex::new(stream)));
         }
         let mut s = self.state.lock().unwrap();

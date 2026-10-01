@@ -15,6 +15,7 @@ mod coordinator;
 mod daemon;
 pub mod dataflow;
 pub mod packaging;
+pub mod provision;
 pub mod runtime;
 mod session;
 mod sha256;

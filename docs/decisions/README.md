@@ -23,3 +23,4 @@ Superseded records stay, with a link to what replaced them.
 | [0015](0015-realtime-data-plane.md) | Real-time data plane: nodes talk directly, the daemon only sets up | Proposed |
 | [0016](0016-packaging-and-deployment.md) | Packaging and deployment: reproducible static binaries, stored by hash | Proposed |
 | [0017](0017-recording-and-replay.md) | Recording and replay: a recorder node, a flat file, replay in place | Proposed |
+| [0018](0018-provisioning.md) | Provisioning over SSH, a systemd service, and a shared token | Proposed |

@@ -44,6 +44,19 @@ enum Command {
         #[arg(long, default_value_t = packaging::DEFAULT_KEEP)]
         keep: usize,
     },
+    /// Make a machine reachable over SSH a keel machine: install keel, share
+    /// the token, run the daemon as a service
+    Provision {
+        /// As `ssh` knows it (your ~/.ssh/config applies)
+        host: String,
+        /// Where the daemon listens. Only connections presenting the token
+        /// are accepted
+        #[arg(long, default_value = "0.0.0.0:7400")]
+        listen: String,
+        /// Stop and remove keel from the host instead (keeps its store)
+        #[arg(long)]
+        remove: bool,
+    },
     /// Run this machine's daemon, which multi-machine dataflows run on
     Daemon {
         /// Address to listen on. Anyone who can reach it can run programs on
@@ -156,6 +169,14 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             recording::export(&recording, &dir, &channels, from, to)?
         }
         Command::ReplayNode { recording, speed } => recording::replay_node(&recording, speed)?,
+        Command::Provision { host, listen, remove: true } => {
+            let _ = listen;
+            keel_daemon::provision::remove(&host)?
+        }
+        Command::Provision { host, listen, remove: false } => {
+            let workspace = packaging::workspace_root(&std::env::current_dir()?)?;
+            keel_daemon::provision::provision(&host, &listen, &workspace)?
+        }
         Command::Daemon { listen } => keel_daemon::serve(&listen)?,
         Command::Ps => ps()?,
         Command::Top { pid } => top::run(pick(pid)?)?,
