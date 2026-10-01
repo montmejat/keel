@@ -27,21 +27,18 @@ in [docs/architecture.md](docs/architecture.md), and every decision has a
 
 ## The stack
 
-| Layer | How keel does it | What you type |
-|---|---|---|
-| Transport, one machine | shared memory, zero-copy, lock-free rings | `node.send_with(..)`, `node.next_event()` |
-| Transport, between machines | TCP between daemons | `machines:`, `keel daemon` |
-| Runtime | a daemon starts the nodes and stops them in order | `keel run`, `keel stop`, `keel ps`, `keel logs` |
-| Real time | SCHED_FIFO, pinned CPUs, no allocation per message | `rt: { priority: 80, cpus: [3] }` |
-| Lifecycle | restarts, a watchdog, updates without stopping | `restart:`, `watchdog_ms:`, `keel update` |
-| Packaging | reproducible static binaries, named by hash | `build:`, `keel deploy` |
-| Deployment | history, rollback, cleanup | `keel history`, `keel rollback`, `keel start`, `keel gc` |
-| Branches | named lines of deployments | `keel branch`, `keel diff`, `keel merge` |
-| Provisioning | over SSH: install, systemd service, shared token | `keel provision <host>` |
-| Tracing | every message timed at every hop, across machines | `keel trace`, `keel top` |
-| Recording | a recorder node, replay in place of the sources | `keel replay`, `keel export`, `keel recording` |
-| Flight recorder | the last seconds, saved when a node fails | `keel-recorder --last 10` |
-| Control | joints as nodes: simulated, or on a CAN bus | `keel-pid`, `keel-sim`, `keel-can` |
+| Layer | What you type |
+|---|---|
+| Transport | `node.send_with()` · `node.next_event()` |
+| Machines | `keel daemon` · `keel provision <host>` |
+| Runtime | `keel run` · `keel stop` · `keel ps` · `keel logs` |
+| Real time | `rt: { priority: 80, cpus: [3] }` |
+| Lifecycle | `restart: on-failure` · `watchdog_ms: 500` · `keel update` |
+| Deployment | `keel deploy` · `keel rollback` · `keel gc` |
+| Branches | `keel branch` · `keel diff` · `keel merge` |
+| Tracing | `keel top` · `keel trace` |
+| Recording | `keel replay` · `keel export` · `keel-recorder --last 10` |
+| Control | `keel-pid` · `keel-sim` · `keel-can` |
 
 ## Try it
 
