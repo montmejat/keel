@@ -7,9 +7,9 @@ keel moves bytes between processes and looks after them. What a robot does
 with that is control: read joints, compute, command them, a thousand times
 a second, over a fieldbus (CAN, EtherCAT) or against a simulator (MuJoCo).
 The question of 2026-10-01: is that core software, or a separate thing?
-[0001](0001-learning-project-whole-stack.md) says keel isn't about
-supporting real robots, and [0003](0003-raw-byte-payloads.md) that payloads
-are raw bytes.
+Real robots are in scope ([0001](0001-learning-project-whole-stack.md), as
+amended), and [0003](0003-raw-byte-payloads.md) says payloads are raw
+bytes.
 
 ## Decision
 - **A separate crate, `keel-control`, above the node API.** It depends on
@@ -54,5 +54,7 @@ are raw bytes.
   which [0016](0016-packaging-and-deployment.md) keeps out of what keel
   builds, so it would be an optional node), several joints tried for real
   (the code takes `--joints`, only one was run).
-- This does pull against 0001: it's the first thing here that is about
-  robots rather than about middleware.
+- Being a separate crate isn't about scope (control is wanted) but about
+  direction: keel's core stays ignorant of joints and buses, so it stays
+  small, and what control needs from it (a clock, typed messages) shows up
+  as a gap in the node API rather than as a special case in the daemon.

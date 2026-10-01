@@ -3,7 +3,8 @@
 keel is a learning project: a minimal but complete robotics-style middleware
 in Rust, from packaging a node to running it across machines. Each layer is
 the smallest thing that works end-to-end; the interest is in the layers and
-the boundaries between them, not in supporting real robots.
+the boundaries between them. Real robots are in scope: control, fieldbuses
+and microcontrollers are built on top, as their own crates.
 
 Decisions and their reasoning live in [`decisions/`](decisions/).
 
