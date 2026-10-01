@@ -87,6 +87,8 @@ fn root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
+// The casts are needed with musl, where resources are a `c_int`.
+#[allow(clippy::unnecessary_cast)]
 fn realtime_limit() -> Check {
     let fix = "nodes with `rt:` run without real-time priority; `keel provision` sets the limit, or add \
                `<user> - rtprio 95` to /etc/security/limits.d/keel.conf";
@@ -98,6 +100,7 @@ fn realtime_limit() -> Check {
     }
 }
 
+#[allow(clippy::unnecessary_cast)]
 fn memory_lock() -> Check {
     match limit(libc::RLIMIT_MEMLOCK as u32) {
         None => check("locked memory", Level::Ok, "no limit".into()),
@@ -206,7 +209,7 @@ fn shared_memory() -> Check {
     };
     match stats {
         Some(stats) => {
-            let free = stats.f_bavail as u64 * stats.f_frsize as u64 >> 20;
+            let free = (stats.f_bavail as u64 * stats.f_frsize as u64) >> 20;
             let level = if free < 256 { Level::Warn } else { Level::Ok };
             check("shared memory", level, format!("/dev/shm, {free} MiB free: where payloads live"))
         }
