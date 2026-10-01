@@ -14,6 +14,7 @@ pub mod control;
 mod coordinator;
 mod daemon;
 pub mod dataflow;
+pub mod doctor;
 pub mod fleet;
 pub mod image;
 pub mod init;

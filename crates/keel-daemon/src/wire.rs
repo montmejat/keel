@@ -55,6 +55,8 @@ pub enum ToDaemon {
     },
     /// What platform are you, what do you hold? Answered with `Hello`.
     Hello,
+    /// Is your machine fit to run a robot? Answered with `Diagnosis`.
+    Diagnose,
     /// Which of these binaries are you missing?
     Missing { hashes: Vec<String> },
     /// Deployment `id` uses these binaries: keep them.
@@ -106,6 +108,10 @@ pub enum Event {
         /// Binaries in the store, and their bytes.
         blobs: u64,
         bytes: u64,
+    },
+    /// Answers `Diagnose`.
+    Diagnosis {
+        checks: Vec<crate::doctor::Check>,
     },
     Missing {
         hashes: Vec<String>,

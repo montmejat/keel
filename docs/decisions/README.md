@@ -31,3 +31,4 @@ Superseded records stay, with a link to what replaced them.
 | [0023](0023-process-one.md) | keel as process 1: a machine that is a kernel and keel | Accepted |
 | [0024](0024-fleet.md) | Fleet: each robot is a deployment of its own, the fleet acts on several | Accepted |
 | [0025](0025-microcontroller-nodes.md) | A microcontroller is a node, behind a bridge on a serial link | Accepted |
+| [0026](0026-diagnostics.md) | Diagnostics: checks read from the system, answered by each daemon | Proposed |

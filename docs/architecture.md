@@ -143,6 +143,8 @@ overlaps with systemd.
 17. **A node on a microcontroller** (done, without hardware): `keel-micro`,
     a `no_std` node over a serial link, and `keel-serial`, the node standing
     in for it ([0025](decisions/0025-microcontroller-nodes.md)).
+18. **Diagnostics** (done): `keel doctor` checks a machine's fitness for a
+    robot, here or through a daemon ([0026](decisions/0026-diagnostics.md)).
 
 ## Benchmarks
 

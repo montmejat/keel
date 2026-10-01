@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use keel::trace;
 
 use crate::control::{self, Reply, Request, Status};
+use crate::doctor;
 use crate::packaging;
 use crate::runtime::{RuntimeDir, SessionFiles};
 use crate::session::{Session, SessionConfig};
@@ -181,6 +182,10 @@ impl Daemon {
                 ToDaemon::Hello => {
                     let (blobs, bytes) = self.store.usage();
                     send(&Event::Hello { target: packaging::host_target(), blobs, bytes })?;
+                    continue;
+                }
+                ToDaemon::Diagnose => {
+                    send(&Event::Diagnosis { checks: doctor::here() })?;
                     continue;
                 }
                 ToDaemon::Missing { hashes } => {

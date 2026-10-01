@@ -188,6 +188,14 @@ pub fn hello(address: &str) -> io::Result<(String, u64, u64)> {
     }
 }
 
+/// A daemon's checks of its machine (see `doctor`).
+pub fn diagnose(address: &str) -> io::Result<Vec<crate::doctor::Check>> {
+    match Remote::connect(address)?.ask(&ToDaemon::Diagnose)? {
+        Event::Diagnosis { checks } => Ok(checks),
+        other => Err(unexpected(address, other)),
+    }
+}
+
 /// Cargo's workspace root for the dataflow's directory.
 pub fn workspace_root(dir: &Path) -> io::Result<PathBuf> {
     let out = Command::new("cargo")

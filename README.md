@@ -25,6 +25,7 @@
   <a href="#where-the-time-goes">Tracing</a> ·
   <a href="#control">Control</a> ·
   <a href="#on-a-microcontroller">Microcontrollers</a> ·
+  <a href="#diagnostics">Diagnostics</a> ·
   <a href="#dataflow">Dataflow file</a> ·
   <a href="#layout">Layout</a>
 </p>
@@ -41,18 +42,14 @@ in [docs/architecture.md](docs/architecture.md), and every decision has a
 
 ## The stack
 
-From a bare machine up:
-
-| Layer | What you type |
-|---|---|
-| Provisioning | `keel provision <host>` · `keel image` |
-| Deployment | `keel deploy` · `keel rollback` · `keel branch` · `keel gc` |
-| Runtime | `keel run` · `keel stop` · `keel update` · `restart:` · `rt:` |
-| Transport | `node.send_with()` · `node.next_event()` |
-| Observability | `keel top` · `keel trace` · `keel replay` |
-| Fleet | `keel fleet run` · `keel fleet status` · `keel fleet update --only robot-3` |
-| Control | `keel-pid` · `keel-sim` · `keel-can` |
-| Microcontrollers | `keel_micro::Node` · `keel-serial --port /dev/ttyACM0` |
+| Layer | What's in it | What you type |
+|---|---|---|
+| Provisioning | install over SSH, or a machine that is only keel | `keel provision` · `keel image` |
+| Deployment | builds named by hash, history, branches | `keel deploy` · `keel rollback` · `keel branch` |
+| Runtime | transport, lifecycle, real time, control, microcontrollers | `keel run` · `keel stop` · `keel update` |
+| Observability | tracing, recording, a flight recorder | `keel top` · `keel trace` · `keel replay` |
+| Fleet | one dataflow on several robots, rolled out in steps | `keel fleet run` · `keel fleet update` |
+| Diagnostics | is this machine fit to run a robot? | `keel doctor` |
 
 ## Try it
 
@@ -261,6 +258,28 @@ It builds for a Cortex-M (`cargo build -p keel-micro --target
 thumbv7em-none-eabihf`) and has only run on a pretend chip so far: the same
 loop over a pseudo-terminal.
 
+### Diagnostics
+
+`keel doctor` checks what a robot needs from its machine: the kernel's
+preemption, real-time and memory-lock limits, the CPU governor, isolated
+cores, the clock, swap, shared memory, the token and the store. With a
+dataflow it asks each of its machines' daemons instead, so it also works on
+a machine with no shell:
+
+```sh
+keel doctor                                 # this machine
+keel doctor examples/pipeline-image.yml     # the machines it runs on
+```
+
+```
+robot (127.0.0.1:7411)
+  warn  kernel               7.2.7-200.fc44.x86_64, PREEMPT_DYNAMIC: a real-time node can be woken milliseconds late ...
+  ok    real-time priority   running as root
+  ok    locked memory        no limit
+  warn  isolated CPUs        none: pinned nodes share their core with everything else; `isolcpus=` ...
+  ok    store                /root/.local/share/keel, 0 binaries, 0 MiB, in memory: emptied by a reboot
+```
+
 Other examples: `keel run examples/dataflow.yml` (talker/listener), and the
 benchmarks: `cargo build --release`, then `./target/release/keel run examples/bench.yml`
 (latency, throughput) or `examples/jitter.yml` (a 1 kHz loop).
@@ -330,19 +349,19 @@ examples/            talker/listener, a camera pipeline, benchmarks, each also
 
 ### Size
 
-Lines of Rust that aren't blank or comments, at milestone 17:
+Lines of Rust that aren't blank or comments, at milestone 18:
 
 | | lines |
 |---|---:|
 | `crates/keel` | 1381 |
-| `crates/keel-daemon` | 4067 |
-| `crates/keel-cli` | 1476 |
+| `crates/keel-daemon` | 4317 |
+| `crates/keel-cli` | 1518 |
 | `crates/keel-record` | 317 |
 | `crates/keel-control` | 392 |
 | `crates/keel-micro` | 143 |
 | `crates/keel-serial` | 178 |
 | `examples/` | 265 |
-| **total** | **8219** |
+| **total** | **8511** |
 
 Direct dependencies: `libc`, `serde`, `serde_json`, `serde_yaml`, and in the
 CLI `clap` and `ratatui`. To count again:

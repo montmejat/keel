@@ -100,6 +100,10 @@ enum Command {
         #[arg(long)]
         kernel: Option<String>,
     },
+    /// Check that this machine is fit to run a robot: real-time settings,
+    /// memory, clock, token. With a dataflow, check its machines instead,
+    /// through their daemons
+    Doctor { dataflow: Option<PathBuf> },
     /// Run this machine's daemon, which multi-machine dataflows run on
     Daemon {
         /// Address to listen on. Anyone who can reach it can run programs on
@@ -271,6 +275,11 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             keel_daemon::provision::provision(&host, &listen, &workspace)?
         }
         Command::Image { out, modules, kernel } => image(&out, &modules, kernel)?,
+        Command::Doctor { dataflow } => {
+            if !doctor(dataflow.as_deref())? {
+                return Ok(ExitCode::FAILURE);
+            }
+        }
         Command::Daemon { listen } => keel_daemon::serve(&listen)?,
         Command::Ps => ps()?,
         Command::Top { pid } => top::run(pick(pid)?)?,
@@ -378,6 +387,44 @@ fn image(out: &std::path::Path, modules: &[String], kernel: Option<String>) -> R
     println!("    -append \"console=ttyS0 quiet keel.ip=10.0.2.15/24 keel.gateway=10.0.2.2\" \\");
     println!("    -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:7411-:7400");
     Ok(())
+}
+
+/// Prints each machine's checks. `false` if any failed.
+fn doctor(dataflow: Option<&std::path::Path>) -> Result<bool, Box<dyn Error>> {
+    use keel_daemon::doctor::{self, Level};
+    let machines = match dataflow {
+        Some(path) => keel_daemon::dataflow::Dataflow::load(path)?.machines,
+        None => Default::default(),
+    };
+    let mut reports = Vec::new();
+    if machines.is_empty() {
+        reports.push(("this machine".to_owned(), Ok(doctor::here())));
+    }
+    for (machine, address) in machines {
+        reports.push((format!("{machine} ({address})"), packaging::diagnose(&address)));
+    }
+    let mut ok = true;
+    for (machine, checks) in reports {
+        println!("{machine}");
+        let checks = match checks {
+            Ok(checks) => checks,
+            Err(e) => {
+                println!("  fail  {:<20} {e}", "daemon");
+                ok = false;
+                continue;
+            }
+        };
+        for check in checks {
+            let level = match check.level {
+                Level::Ok => "ok",
+                Level::Warn => "warn",
+                Level::Fail => "fail",
+            };
+            ok &= check.level != Level::Fail;
+            println!("  {level:<5} {:<20} {}", check.name, check.detail);
+        }
+    }
+    Ok(ok)
 }
 
 fn branch_command(name: &str, branch: Option<&str>, new: bool, delete: bool) -> Result<(), Box<dyn Error>> {
