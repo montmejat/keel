@@ -19,6 +19,9 @@ pub fn info(path: &Path) -> io::Result<()> {
     println!("dataflow   {}", h.dataflow);
     println!("deployment {}", h.deployment.as_deref().unwrap_or("(none: not deployed)"));
     println!("recorder   {}, started {}", h.recorder, fmt::age(h.started));
+    if let Some(f) = &h.failure {
+        println!("kept       because `{}` failed ({}), {}", f.node, f.status, fmt::age(f.at));
+    }
     let mut stats = vec![(0u64, 0u64); h.channels.len()];
     let (mut first, mut last) = (u64::MAX, 0);
     while let Some(record) = reader.next_record()? {

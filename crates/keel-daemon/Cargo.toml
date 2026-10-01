@@ -7,6 +7,7 @@ description = "Runs a keel dataflow's nodes, routes messages between them, and s
 
 [dependencies]
 keel = { path = "../keel" }
+keel-record = { path = "../keel-record" }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

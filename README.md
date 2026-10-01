@@ -25,17 +25,17 @@ examples/            talker/listener, a camera pipeline, benchmarks, each also
 
 ## Size
 
-Lines of Rust that aren't blank or comments, at milestone 13:
+Lines of Rust that aren't blank or comments, at milestone 14:
 
 | | lines |
 |---|---:|
 | `crates/keel` | 1381 |
-| `crates/keel-daemon` | 3646 |
-| `crates/keel-cli` | 1287 |
-| `crates/keel-record` | 176 |
+| `crates/keel-daemon` | 3683 |
+| `crates/keel-cli` | 1290 |
+| `crates/keel-record` | 317 |
 | `crates/keel-control` | 392 |
 | `examples/` | 265 |
-| **total** | **7147** |
+| **total** | **7328** |
 
 Direct dependencies: `libc`, `serde`, `serde_json`, `serde_yaml`, and in the
 CLI `clap` and `ratatui`. To count again:
@@ -145,6 +145,17 @@ keel run examples/pipeline-recorded.yml                 # Ctrl-C to stop
 keel recording ~/.local/share/keel/recordings/<file>    # channels, sizes
 keel replay <file> examples/pipeline.yml --speed 2      # the camera, replayed
 keel export <file> dataset/ --channel brightness --from 10 --to 20
+```
+
+With `--last <seconds>` the recorder is a flight recorder: it keeps only
+the last seconds, in memory, and when a node fails the daemon saves them as
+a recording that says which node and how. Replaying it runs the failure
+again (`examples/flight-recorder.yml`, where a node crashes on purpose):
+
+```sh
+keel run examples/flight-recorder.yml
+#   [daemon] `blackbox` held the 2.5s before `flaky` failed, 252 messages: saved to ...
+keel replay <file> examples/flight-recorder.yml         # `flaky` crashes again, at the same count
 ```
 
 Or with each machine in its own container (Podman):

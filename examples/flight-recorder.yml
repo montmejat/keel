@@ -1,0 +1,29 @@
+# A flight recorder: `blackbox` keeps the last 2 s of the counts in memory,
+# and when a node fails the daemon saves them as a recording. `flaky` crashes
+# at every 250th count, so each crash leaves a file in
+# ~/.local/share/keel/recordings/ holding the counts up to the one that did
+# it (and the few sent before the daemon noticed):
+#
+#   keel run examples/flight-recorder.yml
+#   keel recording <file>                               # which node, how
+#   keel replay <file> examples/flight-recorder.yml     # crashes again, at the same count
+nodes:
+  - id: counter
+    build: counter
+
+  - id: flaky
+    build: flaky
+    restart: on-failure
+    inputs:
+      count: counter/count
+
+  - id: checker
+    build: checker
+    inputs:
+      count: flaky/count
+
+  - id: blackbox
+    build: keel-recorder
+    args: ["--last", "2"]
+    inputs:
+      count: counter/count

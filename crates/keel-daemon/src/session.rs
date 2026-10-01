@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use keel::channel::{self, Bell, Channel, Target, DAEMON};
 use keel::protocol::{
@@ -39,6 +39,8 @@ use keel::protocol::{
 };
 use keel::shm::{self, HeldTable, Pool, Region};
 use keel::trace::{self, ENV_NODE_INDEX};
+use keel_record::flight;
+use keel_record::Failure;
 
 use crate::control::{self, Clock, LinkStatus, LogLine, NodeState, NodeStatus, Reply, Request, Status};
 use crate::dataflow::{Dataflow, NodeConfig, Realtime, Restart, Routes};
@@ -125,6 +127,9 @@ pub(crate) struct Session {
     /// nodes' own counters don't show.
     carried: AtomicU64,
     shm_dir: PathBuf,
+    /// Flight recordings being saved; the shared memory they're read from
+    /// must outlive them.
+    saving: Mutex<Vec<JoinHandle<()>>>,
     files: Mutex<Option<SessionFiles>>,
     events: Sender<Event>,
 }
@@ -347,6 +352,7 @@ impl Session {
             peers: Mutex::new(HashMap::new()),
             carried: AtomicU64::new(0),
             shm_dir: files.shm_dir.clone(),
+            saving: Mutex::new(Vec::new()),
             files: Mutex::new(Some(files)),
             events,
         });
@@ -995,13 +1001,15 @@ impl Session {
             drop(s);
             std::thread::sleep(Duration::from_millis(20));
         }
+        let saving = std::mem::take(&mut *self.saving.lock().unwrap());
+        saving.into_iter().for_each(|save| drop(save.join()));
         ok
     }
 
     /// Records a node's exit. Returns when to start it again, if it should
     /// be: it's being updated, or its policy says so and it has restarts left
     /// (and nothing told it to stop).
-    fn after_exit(&self, id: &str, status: std::process::ExitStatus) -> Option<Duration> {
+    fn after_exit(self: &Arc<Self>, id: &str, status: std::process::ExitStatus) -> Option<Duration> {
         let config = &self.configs[id];
         let mut s = self.state.lock().unwrap();
         let told_to_stop = s.bells.get(id).is_some_and(|b| b.stop_requested());
@@ -1011,6 +1019,9 @@ impl Session {
         let terminated = info.terminated && status.signal() == Some(libc::SIGTERM);
         let success = status.success() || terminated;
         let replacing = std::mem::take(&mut info.replacing);
+        if !success && !replacing && !stopping && !aborted && !told_to_stop {
+            self.save_flight(id, status.to_string());
+        }
         if info.started.elapsed() > STABLE_AFTER {
             info.restarts = 0;
         }
@@ -1045,6 +1056,38 @@ impl Session {
         let n = info.restarts;
         s.log("daemon", format!("`{id}` exited: {status}; restarting in {delay:?} ({n} of {})", config.max_restarts));
         Some(delay)
+    }
+
+    /// A node failed: saves what the dataflow's flight recorders hold (see
+    /// `keel_record::flight`) as recordings, to replay what led to it. Done on
+    /// the side: the nodes aren't kept waiting for a disk.
+    fn save_flight(self: &Arc<Self>, node: &str, status: String) {
+        let recorders: Vec<PathBuf> = (std::fs::read_dir(flight::root(&self.shm_dir)).into_iter().flatten())
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        let at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        for ring in recorders {
+            let recorder = ring.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let name = format!("{}-{at}-{node}-failed-{recorder}.keel", self.dataflow_name);
+            let to = crate::store::default_dir().join("recordings").join(name);
+            let failure = Failure { node: node.to_owned(), status: status.clone(), at };
+            let (session, node) = (self.clone(), node.to_owned());
+            let save = move || {
+                let saved =
+                    std::fs::create_dir_all(to.parent().unwrap()).and_then(|()| flight::save(&ring, &to, failure));
+                let text = match saved {
+                    Ok(Some((count, span))) => format!(
+                        "`{recorder}` held the {span:.1?} before `{node}` failed, {count} messages: saved to {}",
+                        to.display()
+                    ),
+                    Ok(None) => format!("`{recorder}` held nothing when `{node}` failed"),
+                    Err(e) => format!("can't save what `{recorder}` held when `{node}` failed: {e}"),
+                };
+                session.log("daemon", text);
+            };
+            self.saving.lock().unwrap().push(std::thread::spawn(save));
+        }
     }
 
     /// Kills running nodes that have neither taken nor sent a message for

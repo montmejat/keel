@@ -16,6 +16,11 @@
 //!
 //! The header says which dataflow and deployment produced the data. There is
 //! no index: records are read in order, which is what replay and export do.
+//!
+//! A recorder can also keep only the last seconds, in memory, for the daemon
+//! to save when a node fails: see [`flight`].
+
+pub mod flight;
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
@@ -36,6 +41,18 @@ pub struct Header {
     /// Unix seconds.
     pub started: u64,
     pub channels: Vec<Channel>,
+    /// For what a flight recorder held when a node failed: which, and how.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<Failure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Failure {
+    pub node: String,
+    /// How it ended, e.g. `exit status: 1`.
+    pub status: String,
+    /// Unix seconds.
+    pub at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,6 +172,7 @@ mod tests {
             recorder: "rec".into(),
             started: 1,
             channels: vec![Channel { input: "frames".into(), source: "camera/frames".into() }],
+            failure: None,
         };
         let mut file = Vec::new();
         let mut w = Writer::new(&mut file, &header).unwrap();

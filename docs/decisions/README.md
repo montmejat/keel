@@ -27,3 +27,4 @@ Superseded records stay, with a link to what replaced them.
 | [0019](0019-lifecycle.md) | Lifecycle: restart policies, a watchdog, rolling updates | Proposed |
 | [0020](0020-branches.md) | Branches: a named list of deployments per dataflow | Proposed |
 | [0021](0021-control-layer.md) | Control is a layer above keel, and hardware is a node | Proposed |
+| [0022](0022-flight-recorder.md) | Flight recorder: the last seconds in shared memory, saved by the daemon on a failure | Proposed |

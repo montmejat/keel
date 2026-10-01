@@ -690,6 +690,7 @@ name = "keel-daemon"
 version = "0.1.0"
 dependencies = [
  "keel",
+ "keel-record",
  "libc",
  "serde",
  "serde_json",

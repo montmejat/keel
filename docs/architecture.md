@@ -130,6 +130,9 @@ overlaps with systemd.
     and joints on a CAN bus, tried on a virtual one
     ([0021](decisions/0021-control-layer.md)). Not yet: EtherCAT, MuJoCo, a
     simulated clock.
+14. **Flight recorder** (done): a recorder that keeps the last seconds in
+    memory; the daemon saves them when a node fails, as a recording that
+    replays the failure ([0022](decisions/0022-flight-recorder.md)).
 
 ## Benchmarks
 
