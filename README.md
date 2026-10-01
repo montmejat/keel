@@ -1,48 +1,47 @@
-# keel
+<h1 align="center">keel</h1>
 
-A minimal robotics-style middleware in Rust, built to learn how the whole
-stack fits together: transport, runtime, lifecycle, coordination, packaging,
-deployment, provisioning and tooling. See [docs/architecture.md](docs/architecture.md)
-and the [decision records](docs/decisions/).
+<p align="center">
+  <b>A whole robotics middleware stack in about 7,000 lines of Rust.</b><br>
+  Zero-copy transport, real time, deployment, tracing and recording, built on what Linux already ships.
+</p>
 
-Today: dataflows run on one machine or across several. On a machine, nodes
-exchange payloads through shared memory, zero-copy, and pass descriptors to
-each other through lock-free rings with futex wake-ups: 5.6 µs round trip,
-5 M msg/s. A daemon per machine sets this up, supervises the nodes (with
-real-time scheduling if asked), serves a control API, and forwards payloads
-over TCP between machines. Every message is traced. Linux only.
+<p align="center">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0">
+  <img src="https://img.shields.io/badge/language-Rust%20only-orange" alt="Rust only">
+  <img src="https://img.shields.io/badge/platform-Linux-lightgrey" alt="Linux">
+</p>
 
-```
-crates/keel          node API
-crates/keel-daemon   runs dataflows: sessions, coordinator, daemon, control API
-crates/keel-cli      the `keel` command, including the `keel top` TUI
-crates/keel-record   recordings: the file format and the recorder node
-crates/keel-control  control, on top of the node API: joint messages, a PID,
-                     a simulated joint, joints on a CAN bus
-examples/            talker/listener, a camera pipeline, benchmarks, each also
-                     across two machines; containers/ runs them in Podman
-```
+<p align="center">
+  <img src="docs/top.gif" width="900" alt="keel top: a camera pipeline running across two machines">
+</p>
 
-## Size
+keel is a learning project: how does the whole stack of a robotics middleware
+fit together, when each layer is the smallest thing that works? The design is
+in [docs/architecture.md](docs/architecture.md), and every decision has a
+[record](docs/decisions/).
 
-Lines of Rust that aren't blank or comments, at milestone 14:
+- **5.6 µs** round trip between two nodes, **5 M msg/s**, zero-copy on a machine
+- every message traced, across machines
+- 6 direct dependencies; the rest is the kernel: shared memory, futexes,
+  SCHED_FIFO, systemd, SSH, SocketCAN
 
-| | lines |
-|---|---:|
-| `crates/keel` | 1381 |
-| `crates/keel-daemon` | 3683 |
-| `crates/keel-cli` | 1290 |
-| `crates/keel-record` | 317 |
-| `crates/keel-control` | 392 |
-| `examples/` | 265 |
-| **total** | **7328** |
+## The stack
 
-Direct dependencies: `libc`, `serde`, `serde_json`, `serde_yaml`, and in the
-CLI `clap` and `ratatui`. To count again:
-
-```sh
-find crates examples -name '*.rs' | xargs grep -cvE '^\s*(//|$)' | awk -F: '{n += $2} END {print n}'
-```
+| Layer | How keel does it | What you type |
+|---|---|---|
+| Transport, one machine | shared memory, zero-copy, lock-free rings | `node.send_with(..)`, `node.next_event()` |
+| Transport, between machines | TCP between daemons | `machines:`, `keel daemon` |
+| Runtime | a daemon starts the nodes and stops them in order | `keel run`, `keel stop`, `keel ps`, `keel logs` |
+| Real time | SCHED_FIFO, pinned CPUs, no allocation per message | `rt: { priority: 80, cpus: [3] }` |
+| Lifecycle | restarts, a watchdog, updates without stopping | `restart:`, `watchdog_ms:`, `keel update` |
+| Packaging | reproducible static binaries, named by hash | `build:`, `keel deploy` |
+| Deployment | history, rollback, cleanup | `keel history`, `keel rollback`, `keel start`, `keel gc` |
+| Branches | named lines of deployments | `keel branch`, `keel diff`, `keel merge` |
+| Provisioning | over SSH: install, systemd service, shared token | `keel provision <host>` |
+| Tracing | every message timed at every hop, across machines | `keel trace`, `keel top` |
+| Recording | a recorder node, replay in place of the sources | `keel replay`, `keel export`, `keel recording` |
+| Flight recorder | the last seconds, saved when a node fails | `keel-recorder --last 10` |
+| Control | joints as nodes: simulated, or on a CAN bus | `keel-pid`, `keel-sim`, `keel-can` |
 
 ## Try it
 
@@ -86,21 +85,8 @@ machine's architecture and ships it (see below):
 ./target/debug/keel run examples/pipeline-two-machines.yml
 ```
 
-`keel top` then shows the whole dataflow, through the coordinator (`g` for
-the graph, links across machines in yellow):
-
-```
- keel   ● running   cluster base, robot   deployment ecc2c7f0451c   up 8s
-╭ Nodes ──────────────────────────────────────────────────────────────────────
-│  NODE       PROGRAM  MACHINE STATE       IN/s    OUT/s           OUT
-│ ▌camera     camera   robot   ● running      0     30.8   182.9 MiB/s
-│  detector   detector base    ● running   30.8     29.8       477 B/s
-│  recorder   recorder robot   ● running   29.8        0         0 B/s
-╭ Graph ──────────────────────────────────────────────────────────────────────
-│              30.8/s 9.96ms                 29.8/s 278.5µs
-│ [camera] ⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤>[detector] ⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤>[recorder]
-│  @robot                        @base                         @robot
-```
+`keel top` then shows the whole dataflow, through the coordinator, as in the
+recording above (`g` for the graph, links across machines in yellow).
 
 ### Deployments
 
@@ -257,3 +243,37 @@ lost at startup. A node receives `Stop` once all of its upstream nodes have
 exited. If a node fails, the daemon kills the rest. Stopping drains the
 dataflow from its sources down; nodes that ignore `Stop` get SIGTERM, then
 SIGKILL.
+
+## Layout
+
+```
+crates/keel          node API
+crates/keel-daemon   runs dataflows: sessions, coordinator, daemon, control API
+crates/keel-cli      the `keel` command, including the `keel top` TUI
+crates/keel-record   recordings: the file format and the recorder node
+crates/keel-control  control, on top of the node API: joint messages, a PID,
+                     a simulated joint, joints on a CAN bus
+examples/            talker/listener, a camera pipeline, benchmarks, each also
+                     across two machines; containers/ runs them in Podman
+```
+
+### Size
+
+Lines of Rust that aren't blank or comments, at milestone 14:
+
+| | lines |
+|---|---:|
+| `crates/keel` | 1381 |
+| `crates/keel-daemon` | 3683 |
+| `crates/keel-cli` | 1291 |
+| `crates/keel-record` | 317 |
+| `crates/keel-control` | 392 |
+| `examples/` | 265 |
+| **total** | **7329** |
+
+Direct dependencies: `libc`, `serde`, `serde_json`, `serde_yaml`, and in the
+CLI `clap` and `ratatui`. To count again:
+
+```sh
+find crates examples -name '*.rs' | xargs grep -cvE '^\s*(//|$)' | awk -F: '{n += $2} END {print n}'
+```

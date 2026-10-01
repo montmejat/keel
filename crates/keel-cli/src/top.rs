@@ -544,15 +544,17 @@ impl App {
     fn draw_logs(&self, frame: &mut Frame, area: Rect) {
         let filter = self.filter_logs.then(|| self.selected_node().map(|n| n.id.clone())).flatten();
         let height = area.height.saturating_sub(2) as usize;
+        // Through a coordinator, lines are from `node@machine`.
+        let node_of = |log: &LogLine| log.node.split('@').next().unwrap_or_default().to_owned();
         let matching: Vec<&LogLine> =
-            self.logs.iter().filter(|l| filter.as_ref().is_none_or(|node| &l.node == node)).collect();
+            self.logs.iter().filter(|l| filter.as_ref().is_none_or(|node| node_of(l) == *node)).collect();
         let lines: Vec<Line> = matching[matching.len().saturating_sub(height)..]
             .iter()
             .map(|log| {
-                let daemon = log.node == "daemon";
+                let daemon = matches!(node_of(log).as_str(), "daemon" | "coordinator");
                 Line::from(vec![
                     Span::styled(format!("{:>9} ", fmt::timestamp(log.t_ms)), MUTED),
-                    Span::styled(format!("{:<10} ", log.node), Style::new().fg(self.node_color(&log.node))),
+                    Span::styled(format!("{:<10} ", log.node), Style::new().fg(self.node_color(&node_of(log)))),
                     if daemon { Span::styled(log.text.clone(), MUTED) } else { Span::raw(log.text.clone()) },
                 ])
             })
