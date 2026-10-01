@@ -14,6 +14,8 @@ pub mod control;
 mod coordinator;
 mod daemon;
 pub mod dataflow;
+pub mod image;
+pub mod init;
 pub mod packaging;
 pub mod provision;
 pub mod runtime;

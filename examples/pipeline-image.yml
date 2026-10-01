@@ -1,0 +1,26 @@
+# The camera pipeline on a machine whose only program is keel (process 1),
+# here a QEMU virtual machine:
+#
+#   keel image                 # builds keel.cpio, and says how to boot it
+#   qemu-system-x86_64 ...     # as it says; the daemon answers on 127.0.0.1:7411
+#   keel run examples/pipeline-image.yml
+machines:
+  robot: 127.0.0.1:7411
+
+nodes:
+  - id: camera
+    machine: robot
+    build: camera
+
+  - id: detector
+    machine: robot
+    build: detector
+    rt: { priority: 80, cpus: [1] }
+    inputs:
+      frames: camera/frames
+
+  - id: recorder
+    machine: robot
+    build: recorder
+    inputs:
+      brightness: detector/brightness

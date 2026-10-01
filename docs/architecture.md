@@ -133,6 +133,9 @@ overlaps with systemd.
 14. **Flight recorder** (done): a recorder that keeps the last seconds in
     memory; the daemon saves them when a node fails, as a recording that
     replays the failure ([0022](decisions/0022-flight-recorder.md)).
+15. **keel as process 1** (done): `keel image` builds an initramfs holding
+    keel, a network driver and the token; booted by a kernel, keel is the
+    machine's only program ([0023](decisions/0023-process-one.md)).
 
 ## Benchmarks
 

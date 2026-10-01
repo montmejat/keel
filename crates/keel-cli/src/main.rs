@@ -81,6 +81,19 @@ enum Command {
         #[arg(long)]
         remove: bool,
     },
+    /// Build an image a kernel boots with keel as its only program (process
+    /// 1): keel, kernel modules, and the token. Run from this repo
+    Image {
+        #[arg(default_value = "keel.cpio")]
+        out: PathBuf,
+        /// Kernel modules to include, with what they depend on; repeatable.
+        /// The default is QEMU's network card
+        #[arg(long = "module", default_value = "virtio_net")]
+        modules: Vec<String>,
+        /// The kernel the modules are for (default: the one running)
+        #[arg(long)]
+        kernel: Option<String>,
+    },
     /// Run this machine's daemon, which multi-machine dataflows run on
     Daemon {
         /// Address to listen on. Anyone who can reach it can run programs on
@@ -156,6 +169,10 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    // Booted from a `keel image`: we're the machine's first process.
+    if std::process::id() == 1 {
+        keel_daemon::init::run();
+    }
     match run(Cli::parse().command) {
         Ok(code) => code,
         Err(e) => {
@@ -212,6 +229,7 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
             let workspace = packaging::workspace_root(&std::env::current_dir()?)?;
             keel_daemon::provision::provision(&host, &listen, &workspace)?
         }
+        Command::Image { out, modules, kernel } => image(&out, &modules, kernel)?,
         Command::Daemon { listen } => keel_daemon::serve(&listen)?,
         Command::Ps => ps()?,
         Command::Top { pid } => top::run(pick(pid)?)?,
@@ -301,6 +319,23 @@ fn update(path: &std::path::Path, pid: u32) -> Result<(), Box<dyn Error>> {
             println!("now rolling {} into the dataflow: replacing {}, one at a time", new.id, nodes.join(", "))
         }
     }
+    Ok(())
+}
+
+fn image(out: &std::path::Path, modules: &[String], kernel: Option<String>) -> Result<(), Box<dyn Error>> {
+    let release = match kernel {
+        Some(release) => release,
+        None => std::fs::read_to_string("/proc/sys/kernel/osrelease")?.trim().to_owned(),
+    };
+    let workspace = packaging::workspace_root(&std::env::current_dir()?)?;
+    let (hash, kernel) = keel_daemon::image::build(out, &workspace, &release, modules)?;
+    let size = std::fs::metadata(out)?.len();
+    println!("{}: {}, {}, for kernel {release}", out.display(), &hash[..12], fmt::bytes(size as f64));
+    println!("\nTo boot it in QEMU, with its daemon reachable at 127.0.0.1:7411:\n");
+    println!("  qemu-system-{} -enable-kvm -m 1G -smp 2 -nographic \\", std::env::consts::ARCH);
+    println!("    -kernel {} -initrd {} \\", kernel.display(), out.display());
+    println!("    -append \"console=ttyS0 quiet keel.ip=10.0.2.15/24 keel.gateway=10.0.2.2\" \\");
+    println!("    -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:7411-:7400");
     Ok(())
 }
 

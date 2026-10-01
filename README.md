@@ -31,7 +31,7 @@ From a bare machine up:
 
 | Layer | What you type |
 |---|---|
-| Provisioning | `keel provision <host>` |
+| Provisioning | `keel provision <host>` · `keel image` |
 | Deployment | `keel deploy` · `keel rollback` · `keel branch` · `keel gc` |
 | Runtime | `keel run` · `keel stop` · `keel update` · `restart:` · `rt:` |
 | Transport | `node.send_with()` · `node.next_event()` |
@@ -68,6 +68,19 @@ It builds keel for the machine, installs it, runs the daemon as a systemd
 service, and shares a token that every connection to a daemon must present.
 The token authenticates but doesn't encrypt: use a VPN (WireGuard) on an
 untrusted network.
+
+Or make the machine nothing but keel. `keel image` builds a 4.5 MB file a
+kernel boots, with keel as the machine's first and only program: no
+distribution, no systemd, no shell. It mounts what it needs, loads a network
+driver, takes its address from the kernel command line and runs the daemon.
+In QEMU it's up in a second:
+
+```sh
+keel image                         # keel.cpio, and the QEMU command to boot it
+examples/image/boot.sh 3           # or: three of them, on 127.0.0.1:7411-7413
+keel run examples/pipeline-image.yml
+examples/image/boot.sh stop
+```
 
 List machines in the dataflow and place each node on one
 (`examples/pipeline-two-machines.yml`), start a daemon per machine, then run
@@ -254,17 +267,17 @@ examples/            talker/listener, a camera pipeline, benchmarks, each also
 
 ### Size
 
-Lines of Rust that aren't blank or comments, at milestone 14:
+Lines of Rust that aren't blank or comments, at milestone 15:
 
 | | lines |
 |---|---:|
 | `crates/keel` | 1381 |
-| `crates/keel-daemon` | 3683 |
-| `crates/keel-cli` | 1291 |
+| `crates/keel-daemon` | 3988 |
+| `crates/keel-cli` | 1319 |
 | `crates/keel-record` | 317 |
 | `crates/keel-control` | 392 |
 | `examples/` | 265 |
-| **total** | **7329** |
+| **total** | **7662** |
 
 Direct dependencies: `libc`, `serde`, `serde_json`, `serde_yaml`, and in the
 CLI `clap` and `ratatui`. To count again:

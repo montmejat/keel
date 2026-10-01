@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "examples/*"]
-exclude = ["examples/containers"]
+exclude = ["examples/containers", "examples/image"]
 
 [workspace.package]
 version = "0.1.0"
