@@ -27,17 +27,15 @@ in [docs/architecture.md](docs/architecture.md), and every decision has a
 
 ## The stack
 
+From a bare machine up:
+
 | Layer | What you type |
 |---|---|
+| Provisioning | `keel provision <host>` |
+| Deployment | `keel deploy` · `keel rollback` · `keel branch` · `keel gc` |
+| Runtime | `keel run` · `keel stop` · `keel update` · `restart:` · `rt:` |
 | Transport | `node.send_with()` · `node.next_event()` |
-| Machines | `keel daemon` · `keel provision <host>` |
-| Runtime | `keel run` · `keel stop` · `keel ps` · `keel logs` |
-| Real time | `rt: { priority: 80, cpus: [3] }` |
-| Lifecycle | `restart: on-failure` · `watchdog_ms: 500` · `keel update` |
-| Deployment | `keel deploy` · `keel rollback` · `keel gc` |
-| Branches | `keel branch` · `keel diff` · `keel merge` |
-| Tracing | `keel top` · `keel trace` |
-| Recording | `keel replay` · `keel export` · `keel-recorder --last 10` |
+| Observability | `keel top` · `keel trace` · `keel replay` |
 | Control | `keel-pid` · `keel-sim` · `keel-can` |
 
 ## Try it
