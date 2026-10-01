@@ -200,6 +200,8 @@ fn swap() -> Check {
     }
 }
 
+// The casts are needed where these fields are 32 bits.
+#[allow(clippy::unnecessary_cast)]
 fn shared_memory() -> Check {
     let path = c"/dev/shm";
     // SAFETY: `stats` is written by the call before it's read.
