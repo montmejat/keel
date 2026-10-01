@@ -26,7 +26,7 @@ Superseded records stay, with a link to what replaced them.
 | [0018](0018-provisioning.md) | Provisioning over SSH, a systemd service, and a shared token | Accepted |
 | [0019](0019-lifecycle.md) | Lifecycle: restart policies, a watchdog, rolling updates | Accepted |
 | [0020](0020-branches.md) | Branches: a named list of deployments per dataflow | Accepted |
-| [0021](0021-control-layer.md) | Control is a layer above keel, and hardware is a node | Proposed |
+| [0021](0021-control-layer.md) | Control is a layer above keel, and hardware is a node | Accepted |
 | [0022](0022-flight-recorder.md) | Flight recorder: the last seconds in shared memory, saved by the daemon on a failure | Accepted |
 | [0023](0023-process-one.md) | keel as process 1: a machine that is a kernel and keel | Accepted |
 | [0024](0024-fleet.md) | Fleet: each robot is a deployment of its own, the fleet acts on several | Accepted |

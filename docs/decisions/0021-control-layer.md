@@ -1,6 +1,6 @@
 # 0021: Control is a layer above keel, and hardware is a node
 
-**Status:** Proposed, 2026-10-01
+**Status:** Accepted, 2026-10-01
 
 ## Context
 keel moves bytes between processes and looks after them. What a robot does
@@ -15,6 +15,8 @@ bytes.
 - **A separate crate, `keel-control`, above the node API.** It depends on
   `keel` and `libc`; nothing in keel depends on it. It could live in another
   repository; it's in the workspace to be built and tested with the rest.
+  Built with only what any user of keel gets, it's the proof that the node
+  API is enough, or the place where it shows it isn't.
 - **Hardware is a node, not a trait.** Whatever publishes `state` and takes
   `command` is the joints. There's no hardware-interface trait and no
   plugins: the dataflow file is the interface, and choosing between a
