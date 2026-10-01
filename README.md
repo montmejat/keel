@@ -15,6 +15,20 @@
   <img src="docs/top.gif" width="900" alt="keel top: a camera pipeline running across two machines">
 </p>
 
+<p align="center">
+  <a href="#the-stack">Stack</a> ·
+  <a href="#try-it">Try it</a> ·
+  <a href="#across-machines">Machines</a> ·
+  <a href="#deployments">Deployments</a> ·
+  <a href="#a-fleet">Fleet</a> ·
+  <a href="#recording-and-replay">Recording</a> ·
+  <a href="#where-the-time-goes">Tracing</a> ·
+  <a href="#control">Control</a> ·
+  <a href="#on-a-microcontroller">Microcontrollers</a> ·
+  <a href="#dataflow">Dataflow file</a> ·
+  <a href="#layout">Layout</a>
+</p>
+
 keel is a learning project: how does the whole stack of a robotics middleware
 fit together, when each layer is the smallest thing that works? The design is
 in [docs/architecture.md](docs/architecture.md), and every decision has a
