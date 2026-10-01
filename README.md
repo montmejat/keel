@@ -50,7 +50,6 @@ in [docs/architecture.md](docs/architecture.md), and every decision has a
 | Observability | tracing, recording, a flight recorder | `keel top` · `keel trace` · `keel replay` |
 | Fleet | one dataflow on several robots, rolled out in steps | `keel fleet run` · `keel fleet update` |
 | Diagnostics | is this machine fit to run a robot? | `keel doctor` |
-| Agents | an AI agent operating the stack: deploy, read the traces, roll back | *coming soon* |
 
 ## Try it
 
