@@ -58,6 +58,26 @@ stamp of the state it answers.
 The CAN frames are made up (a command frame and a state frame per joint):
 a real drive's protocol replaces them in `keel-can`.
 
+## On a microcontroller
+
+`keel-micro` is the node API for a chip: `no_std`, no allocation, no
+dependencies, over any byte link (a UART)
+([0025](decisions/0025-microcontroller-nodes.md)). On the machine it's
+plugged into, `keel-serial` stands in for it as an ordinary node, so the
+chip shows up in `keel top`, traces and recordings like the rest:
+
+```rust
+let mut node: keel_micro::Node<Uart, 64> = keel_micro::Node::new(uart);
+loop {
+    while let Some((COMMAND, payload)) = node.poll() { /* drive the motor */ }
+    node.send(STATE, &encoder.to_le_bytes());
+}
+```
+
+It builds for a Cortex-M (`cargo build -p keel-micro --target
+thumbv7em-none-eabihf`) and has only run on a pretend chip so far: the same
+loop over a pseudo-terminal (`examples/control-micro.yml`, the PID again).
+
 ## A cycle
 
 A bus master or simulation ticks once a period. **By default it closes the
@@ -173,11 +193,20 @@ seconds in 6 s, on the same trajectory as in real time.
 ## Examples
 
 ```sh
-keel run examples/control-sim.yml    # keel-pid holding a simulated pendulum at 1 rad, at 1 kHz
-keel trace                           # state → command, end to end
-sudo ip link add vcan0 type vcan && sudo ip link set vcan0 up
-keel run examples/control-can.yml    # the same, behind a virtual CAN bus
-keel run examples/control-micro.yml  # the joint on a (pretend) microcontroller
+keel run examples/control-sim.yml         # keel-pid holding a simulated pendulum at 1 rad, at 1 kHz
+keel logs controller                      # "5s target 1: at 1.000 rad, +0.000 rad/s, pushing +4.13 N m"
+keel trace                                # state → command, end to end
+keel run examples/control-lockstep.yml    # the same in lockstep: simulated time goes by over 100× faster
+keel run examples/control-micro.yml       # the joint on a (pretend) microcontroller
+```
+
+Behind a virtual CAN bus: in a network namespace, without root, where the
+system allows unprivileged ones, or with `sudo ip link add vcan0 type vcan &&
+sudo ip link set vcan0 up` once:
+
+```sh
+unshare -rn sh -c 'ip link add vcan0 type vcan && ip link set vcan0 up &&
+  ./target/debug/keel run examples/control-can.yml'
 ```
 
 ## Not yet

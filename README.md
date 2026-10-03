@@ -1,8 +1,8 @@
 <h1 align="center">keel</h1>
 
 <p align="center">
-  <b>A whole robotics middleware stack in about 8,000 lines of Rust.</b><br>
-  Zero-copy transport, real time, deployment, tracing and recording, built on what Linux already ships.
+  <b>A whole robotics middleware stack in about 9,000 lines of Rust.</b><br>
+  Zero-copy transport, real time, control, deployment, tracing and recording, built on what Linux already ships.
 </p>
 
 <p align="center">
@@ -18,15 +18,7 @@
 <p align="center">
   <a href="#the-stack">Stack</a> ·
   <a href="#try-it">Try it</a> ·
-  <a href="#across-machines">Machines</a> ·
-  <a href="#deployments">Deployments</a> ·
-  <a href="#a-fleet">Fleet</a> ·
-  <a href="#recording-and-replay">Recording</a> ·
-  <a href="#where-the-time-goes">Tracing</a> ·
-  <a href="#control">Control</a> ·
-  <a href="#on-a-microcontroller">Microcontrollers</a> ·
-  <a href="#diagnostics">Diagnostics</a> ·
-  <a href="#dataflow">Dataflow file</a> ·
+  <a href="#docs">Docs</a> ·
   <a href="#layout">Layout</a>
 </p>
 
@@ -36,20 +28,21 @@ in [docs/architecture.md](docs/architecture.md), and every decision has a
 [record](docs/decisions/).
 
 - **5.6 µs** round trip between two nodes, **5 M msg/s**, zero-copy on a machine
-- every message traced, across machines
+- a control loop closed within its 1 ms cycle: **~20 µs** from state to
+  command, **1.3 µs** spinning
+- every message traced and stamped, across machines
 - 6 direct dependencies; the rest is the kernel: shared memory, futexes,
   SCHED_FIFO, systemd, SSH, SocketCAN
 
 ## The stack
 
-| Layer | What's in it | What you type |
-|---|---|---|
-| Provisioning | install over SSH, or a machine that is only keel | `keel provision` · `keel image` |
-| Deployment | builds named by hash, history, branches | `keel deploy` · `keel rollback` · `keel branch` |
-| Runtime | transport, lifecycle, real time, control, microcontrollers | `keel run` · `keel stop` · `keel update` |
-| Observability | tracing, recording, a flight recorder | `keel top` · `keel trace` · `keel replay` |
-| Fleet | one dataflow on several robots, rolled out in steps | `keel fleet run` · `keel fleet update` |
-| Diagnostics | is this machine fit to run a robot? | `keel doctor` |
+| Layer | What's in it | What you type | Docs |
+|---|---|---|---|
+| Provisioning | install over SSH, or a machine that is only keel; is it fit for a robot? | `keel provision` · `keel image` · `keel doctor` | [machines](docs/machines.md) |
+| Deployment | builds named by hash, history, branches, fleets | `keel deploy` · `keel rollback` · `keel branch` · `keel fleet` | [deployment](docs/deployment.md) |
+| Runtime | transport, lifecycle, real time, phases | `keel run` · `keel stop` · `keel update` | [dataflow](docs/dataflow.md) |
+| Control | joints, controllers, CAN, simulation, lockstep, microcontrollers | `keel-pid` · `keel-sim` · `keel-can` | [control](docs/control.md) |
+| Observability | tracing, recording, replay, a flight recorder | `keel top` · `keel trace` · `keel replay` | [observability](docs/observability.md) |
 
 ## Try it
 
@@ -62,344 +55,56 @@ In another terminal:
 
 ```sh
 ./target/debug/keel top          # live view: ↑↓ select, f filter logs, g graph, s stop, q quit
-./target/debug/keel ps           # running dataflows
-./target/debug/keel logs -f      # follow all logs; `keel logs camera` for one node
+./target/debug/keel trace        # where the time goes
 ./target/debug/keel stop         # graceful stop (so is Ctrl-C in the first terminal)
 ```
 
-### Across machines
+Then [examples/](examples/README.md): a control loop, a virtual CAN bus,
+two machines, a fleet, a flight recorder, the benchmarks.
 
-Make a machine a keel machine (it needs SSH access, systemd, and ideally
-passwordless sudo, for real-time limits):
+## Docs
 
-```sh
-keel provision pi            # as in your ~/.ssh/config; run from this repo
-keel provision --remove pi   # undo it
-```
-
-It builds keel for the machine, installs it, runs the daemon as a systemd
-service, and shares a token that every connection to a daemon must present.
-The token authenticates but doesn't encrypt: use a VPN (WireGuard) on an
-untrusted network.
-
-Or make the machine nothing but keel. `keel image` builds a 4.5 MB file a
-kernel boots, with keel as the machine's first and only program: no
-distribution, no systemd, no shell. It mounts what it needs, loads a network
-driver, takes its address from the kernel command line and runs the daemon.
-In QEMU it's up in a second:
-
-```sh
-keel image                         # keel.cpio, and the QEMU command to boot it
-examples/image/boot.sh 3           # or: three of them, on 127.0.0.1:7411-7413
-keel run examples/pipeline-image.yml
-examples/image/boot.sh stop
-```
-
-List machines in the dataflow and place each node on one
-(`examples/pipeline-two-machines.yml`), start a daemon per machine, then run
-it from the machine with the sources. keel builds each node for its
-machine's architecture and ships it (see below):
-
-```sh
-./target/debug/keel daemon --listen 127.0.0.1:7401 &    # "robot"
-./target/debug/keel daemon --listen 127.0.0.1:7402 &    # "base"
-./target/debug/keel run examples/pipeline-two-machines.yml
-```
-
-`keel top` then shows the whole dataflow, through the coordinator, as in the
-recording above (`g` for the graph, links across machines in yellow).
-
-### Deployments
-
-A node with `build: <cargo binary>` instead of `path:` is built by keel, as
-a reproducible static binary for its machine (x86_64 or aarch64), and sent
-to that machine's daemon by SHA-256, only if it doesn't have it already.
-Each deployment is recorded:
-
-```sh
-keel deploy examples/pipeline-two-machines.yml   # build and ship, don't run
-keel history                                     # * marks the current one
-keel rollback pipeline-two-machines              # back to the previous one
-keel start pipeline-two-machines                 # run the current one
-keel gc --keep 3                                 # forget older ones, delete unused binaries
-```
-
-A deployed dataflow has branches, to try something without losing what
-works. Deployments go to the branch you're on, and `keel start` runs its
-newest one:
-
-```sh
-keel branch pipeline-two-machines planner --new  # start a branch from the current deployment
-keel deploy examples/pipeline-two-machines.yml   # lands on `planner`
-keel diff pipeline-two-machines@main pipeline-two-machines   # node by node: binary, settings
-keel branch pipeline-two-machines main           # back to main (no branch name: list them)
-keel start pipeline-two-machines@planner         # run a branch without switching to it
-keel merge pipeline-two-machines planner         # main takes what planner has
-```
-
-Cross-building needs the target: `rustup target add aarch64-unknown-linux-musl`
-(and `x86_64-unknown-linux-musl`).
-
-### A fleet
-
-Several robots running one dataflow, listed in a fleet file with each
-robot's addresses (`examples/fleet.yml`: three QEMU machines). New code goes
-to one robot first, then to the others, without stopping any:
-
-```sh
-examples/image/boot.sh 3
-keel fleet run examples/fleet.yml                       # deploy to all, run them
-keel fleet update examples/fleet.yml --only robot-3     # after changing a node
-keel fleet status examples/fleet.yml
-keel fleet update examples/fleet.yml                    # the others
-keel fleet rollback examples/fleet.yml --only robot-2   # or back
-```
-
-```
-ROBOT        STATE     CODE      DEPLOYMENT      DEPLOYED  NODES  RESTARTS    LAT p99
-robot-1      running   c99cf132  e301eaccd818     29s ago    3/3         0    204.8µs
-robot-2      running   c99cf132  9079a98083b2     28s ago    3/3         0    221.2µs
-robot-3      running   b05710dd  5bd0660eca87      8s ago    3/3         0    237.6µs
-```
-
-### Recording and replay
-
-`keel-recorder` is a node that records its inputs to a file naming the
-dataflow and deployment that produced them. `keel replay` runs a dataflow
-with its recorded sources replaced by the recording, so the rest can't tell;
-`keel export` turns a recording into files plus an index:
-
-```sh
-keel run examples/pipeline-recorded.yml                 # Ctrl-C to stop
-keel recording ~/.local/share/keel/recordings/<file>    # channels, sizes
-keel replay <file> examples/pipeline.yml --speed 2      # the camera, replayed
-keel export <file> dataset/ --channel brightness --from 10 --to 20
-```
-
-With `--last <seconds>` the recorder is a flight recorder: it keeps only
-the last seconds, in memory, and when a node fails the daemon saves them as
-a recording that says which node and how. Replaying it runs the failure
-again (`examples/flight-recorder.yml`, where a node crashes on purpose):
-
-```sh
-keel run examples/flight-recorder.yml
-#   [daemon] `blackbox` held the 2.5s before `flaky` failed, 252 messages: saved to ...
-keel replay <file> examples/flight-recorder.yml         # `flaky` crashes again, at the same count
-```
-
-Or with each machine in its own container (Podman):
-`examples/containers/run.sh`. A daemon started by hand without a token (as
-in these examples) accepts any connection: only on trusted networks.
-
-### Where the time goes
-
-Every message is traced. `keel trace` shows each input's latency (publish →
-taken) and processing time (taken → released) as percentiles, then the latest
-sampled traces: one message followed through every hop and every node it
-caused, across machines too.
-
-```sh
-./target/debug/keel trace                 # while a dataflow runs
-./target/debug/keel trace --export t.json # open in ui.perfetto.dev
-```
-
-```
-camera/frames@robot #11: 7.63s end to end
-  → detector/frames@base  7.49s  [send 6.51s, daemon 680ms, network 302ms, route 1.30ms, wake 42.5µs]  then processing 140µs
-    detector/brightness #11
-      → recorder/brightness@robot  132ms  [send 18.2µs, daemon 34.8µs, network 130ms, route 86.9µs, wake 2.01ms]  then processing 11.8µs
-```
-
-(A Raspberry Pi on Wi-Fi sending 6 MB frames to a laptop: the frame waited
-6.5 s in the camera's queue before its daemon could send it.)
-
-### Control
-
-`keel-control` is a layer above keel, not part of it: nodes that publish a
-joint `state` and take a `command`, and a controller between them. The
-controller doesn't know what the joints are, so the same one runs against
-a simulation and against a CAN bus:
-
-```sh
-keel run examples/control-sim.yml    # keel-pid holding a simulated pendulum at 1 rad, at 1 kHz
-keel logs controller                 # "5s target 1: at 1.000 rad, +0.000 rad/s, pushing +4.13 N m"
-```
-
-The loop closes within its cycle: the simulation (or the bus master)
-publishes the state, waits up to 300 µs for the command answering it, and
-applies it before the tick ends, instead of at the next one. `keel trace`
-shows it: about 20 µs from state to applied command, rather than a period
-(1 ms, `--cycle next`). Nodes on CPUs of their own can also spin instead of
-sleeping while they wait (`--spin-us`): 1.3 µs with both sides spinning, or
-3–4 µs with the controller spinning only around when states are due, for 6%
-of a core.
-
-Every message is stamped with the moment it describes (when the joints were
-read, the simulation's time), and the controller takes its time from the
-stamps. So it can't tell real time from a replay, or from a simulation in
-lockstep, which steps as soon as the controller answers:
-
-```sh
-keel run examples/control-lockstep.yml    # simulated time goes by over 100× faster
-```
-
-`examples/control-can.yml` puts the joint behind a CAN bus (SocketCAN, a
-raw socket): `keel-can` is the bus master, and `keel-can-motor` stands in
-for the drive at the other end of a virtual interface, applying commands as
-their frames arrive. No hardware, and no root either, in a network namespace
-(where the system allows unprivileged ones; otherwise `sudo ip link add vcan0
-type vcan && sudo ip link set vcan0 up` once):
-
-```sh
-unshare -rn sh -c 'ip link add vcan0 type vcan && ip link set vcan0 up &&
-  ./target/debug/keel run examples/control-can.yml'
-```
-
-[docs/control.md](docs/control.md) describes the control layer: its
-messages, nodes, cycles, stamps and phases, and how to write a controller.
-
-### On a microcontroller
-
-`keel-micro` is the node API for a chip: `no_std`, no allocation, no
-dependencies, over any byte link (a UART). On the machine it's plugged
-into, `keel-serial` stands in for it as an ordinary node, so the chip shows
-up in `keel top`, traces and recordings like the rest:
-
-```rust
-let mut node: keel_micro::Node<Uart, 64> = keel_micro::Node::new(uart);
-loop {
-    while let Some((COMMAND, payload)) = node.poll() { /* drive the motor */ }
-    node.send(STATE, &encoder.to_le_bytes());
-}
-```
-
-```sh
-keel run examples/control-micro.yml    # the PID again, its joint on a pretend chip
-```
-
-It builds for a Cortex-M (`cargo build -p keel-micro --target
-thumbv7em-none-eabihf`) and has only run on a pretend chip so far: the same
-loop over a pseudo-terminal.
-
-### Diagnostics
-
-`keel doctor` checks what a robot needs from its machine: the kernel's
-preemption, real-time and memory-lock limits, the CPU governor, isolated
-cores, the clock, swap, shared memory, the token and the store. With a
-dataflow it asks each of its machines' daemons instead, so it also works on
-a machine with no shell:
-
-```sh
-keel doctor                                 # this machine
-keel doctor examples/pipeline-image.yml     # the machines it runs on
-```
-
-```
-robot (127.0.0.1:7411)
-  warn  kernel               7.2.7-200.fc44.x86_64, PREEMPT_DYNAMIC: a real-time node can be woken milliseconds late ...
-  ok    real-time priority   running as root
-  ok    locked memory        no limit
-  warn  isolated CPUs        none: pinned nodes share their core with everything else; `isolcpus=` ...
-  ok    store                /root/.local/share/keel, 0 binaries, 0 MiB, in memory: emptied by a reboot
-```
-
-Other examples: `keel run examples/dataflow.yml` (talker/listener), and the
-benchmarks: `cargo build --release`, then `./target/release/keel run examples/bench.yml`
-(latency, throughput), `examples/jitter.yml` (a 1 kHz loop) or `examples/hop.yml`
-and `hop-spin.yml` (one hop, one way, sleeping or spinning).
-
-## Dataflow
-
-```yaml
-nodes:
-  - id: listener
-    path: ../target/debug/listener   # relative to this file
-    inputs:
-      count: talker/count            # <input>: <node>/<output>
-```
-
-An input can also keep only the newest message, so that a slow reader (a
-recorder, a viewer) never holds its sender back; and a node can ask for
-real-time scheduling:
-
-```yaml
-  - id: controller
-    path: ../target/release/controller
-    rt: { priority: 80, cpus: [3] }  # SCHED_FIFO 80, pinned to CPU 3
-    inputs:
-      state: estimator/state
-      camera: { source: camera/frames, keep: latest }
-```
-
-Nodes can also be restarted when they fail, watched for being stuck, and
-replaced in a running dataflow (`examples/lifecycle.yml` shows the first
-two, on purpose):
-
-```yaml
-  - id: detector
-    build: detector
-    restart: on-failure     # or always; max_restarts: 5, backoff 100 ms → 5 s
-    watchdog_ms: 500        # killed (then restarted) after 500 ms without progress
-```
-
-```sh
-keel update examples/pipeline-two-machines.yml   # new code in, node by node
-```
-
-Periodic loops tick on multiples of their period on the machine's clock, so
-loops of one period are in phase whenever they started; `phase_us` moves a
-node along its period, e.g. to report just before another reads:
-
-```yaml
-  - id: motor
-    path: ../target/debug/keel-can-motor
-    phase_us: 900           # 100 µs before the bus master's 1 ms tick
-```
-
-Real-time priority needs the privilege: an rtprio limit (e.g.
-`/etc/security/limits.d/keel.conf` with `<user> - rtprio 95`), or
-`CAP_SYS_NICE`. Without it the daemon says so, and the rest applies.
-
-The daemon starts nodes only once every node has registered, so no message is
-lost at startup. A node receives `Stop` once all of its upstream nodes have
-exited. If a node fails, the daemon kills the rest. Stopping drains the
-dataflow from its sources down; nodes that ignore `Stop` get SIGTERM, then
-SIGKILL.
+| | |
+|---|---|
+| [architecture](docs/architecture.md) | the design, the milestones, the benchmarks |
+| [dataflow](docs/dataflow.md) | the dataflow file, field by field, and the lifecycle |
+| [machines](docs/machines.md) | provisioning, images, dataflows across machines, `keel doctor` |
+| [deployment](docs/deployment.md) | builds, history, rollback, branches, fleets |
+| [observability](docs/observability.md) | `keel top`, traces, recording, replay, the flight recorder |
+| [control](docs/control.md) | joints and controllers, cycles, stamps, phases, writing a controller |
+| [decisions](docs/decisions/) | one record per decision: context, choice, cost |
 
 ## Layout
 
 ```
-crates/keel          node API
+crates/keel          node API: shared memory, channels, tracing, stamps, periodic loops
 crates/keel-daemon   runs dataflows: sessions, coordinator, daemon, control API
 crates/keel-cli      the `keel` command, including the `keel top` TUI
 crates/keel-record   recordings: the file format and the recorder node
-crates/keel-control  control, on top of the node API: joint messages, a PID,
-                     a simulated joint, joints on a CAN bus (docs/control.md)
+crates/keel-control  control above the node API: joint messages, cycles, a PID,
+                     a simulated joint, joints on a CAN bus
 crates/keel-micro    a node on a microcontroller: no_std, no allocation
 crates/keel-serial   the node standing in for that chip on a serial port
-examples/            talker/listener, a camera pipeline, benchmarks, each also
-                     across two machines; containers/ runs them in Podman
+examples/            dataflows and their nodes, benchmarks, containers, images
 ```
 
-### Size
-
-Lines of Rust that aren't blank or comments, at milestone 18:
+Lines of Rust that aren't blank or comments, at milestone 20:
 
 | | lines |
 |---|---:|
-| `crates/keel` | 1381 |
-| `crates/keel-daemon` | 4317 |
-| `crates/keel-cli` | 1518 |
-| `crates/keel-record` | 317 |
-| `crates/keel-control` | 392 |
+| `crates/keel` | 1503 |
+| `crates/keel-daemon` | 4327 |
+| `crates/keel-cli` | 1520 |
+| `crates/keel-record` | 326 |
+| `crates/keel-control` | 563 |
 | `crates/keel-micro` | 143 |
 | `crates/keel-serial` | 178 |
-| `examples/` | 265 |
-| **total** | **8511** |
+| `examples/` | 440 |
+| **total** | **9000** |
 
 Direct dependencies: `libc`, `serde`, `serde_json`, `serde_yaml`, and in the
 CLI `clap` and `ratatui`. To count again:
 
 ```sh
-find crates examples -name '*.rs' | xargs grep -cvE '^\s*(//|$)' | awk -F: '{n += $2} END {print n}'
+find crates examples -name '*.rs' | xargs grep -cvHE '^\s*(//|$)' | awk -F: '{n += $2} END {print n}'
 ```
