@@ -139,6 +139,8 @@ pub struct Node {
     sent: u64,
     last_input: Context,
     last_sampled_root_ns: u64,
+    /// How long `next_event` spins on the bell before sleeping on it.
+    spin_ns: u64,
 }
 
 impl Node {
@@ -232,7 +234,16 @@ impl Node {
             sent: 0,
             last_input: Context::default(),
             last_sampled_root_ns: 0,
+            spin_ns: 0,
         })
+    }
+
+    /// Makes `next_event` watch for messages for up to `spin` before going to
+    /// sleep: no system call and no wake-up on either side while it watches,
+    /// at the cost of keeping a CPU busy. `Duration::MAX` never sleeps. Only
+    /// worth it on a CPU of its own (`rt: { cpus: [...] }`, ideally isolated).
+    pub fn set_spin(&mut self, spin: std::time::Duration) {
+        self.spin_ns = spin.as_nanos().min(u64::MAX as u128) as u64;
     }
 
     pub fn id(&self) -> &str {
@@ -341,8 +352,33 @@ impl Node {
                 return Ok(Event::Stop);
             }
             self.tracer.stats.set_waiting(true);
-            self.bell.wait(seen, None);
+            if !self.spin_on_bell(seen) {
+                self.bell.wait(seen, None);
+            }
             self.tracer.stats.set_waiting(false);
+        }
+    }
+
+    /// Watches the bell for up to `spin_ns`; true if it rang. Senders only
+    /// make a system call for a receiver that says it's asleep, so while this
+    /// runs a message costs them a few stores.
+    fn spin_on_bell(&self, seen: u32) -> bool {
+        if self.spin_ns == 0 {
+            return false;
+        }
+        let deadline = trace::now_ns().saturating_add(self.spin_ns);
+        loop {
+            // Reading the clock costs more than a look at the bell: only
+            // every so often.
+            for _ in 0..64 {
+                if self.bell.seq() != seen {
+                    return true;
+                }
+                std::hint::spin_loop();
+            }
+            if self.spin_ns != u64::MAX && trace::now_ns() >= deadline {
+                return false;
+            }
         }
     }
 

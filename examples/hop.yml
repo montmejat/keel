@@ -1,0 +1,18 @@
+# One hop, measured one way: a message every millisecond, like a control
+# loop, from publish to the receiver having it in hand. The sink sleeps
+# between messages; hop-spin.yml has it watch instead. Compare both with
+# what the machine allows, keel out of the way:
+#   ./target/release/hop-floor --cpus 2,4 --mode futex    # or --mode spin
+# Build with `cargo build --release` first. CPUs 2 and 4 are separate
+# physical cores here; pick yours from `lscpu -e`.
+nodes:
+  - id: source
+    path: ../target/release/hop-source
+    rt: { cpus: [2] }
+
+  - id: sink
+    path: ../target/release/hop-sink
+    args: ["--spin", "off"]
+    rt: { cpus: [4] }
+    inputs:
+      data: source/data
