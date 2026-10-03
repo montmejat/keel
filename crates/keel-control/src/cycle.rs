@@ -6,6 +6,11 @@
 //!
 //! The answer is recognised by its trace context: a controller that sends
 //! while it holds the state names that state as its parent.
+//!
+//! With no deadline, and no clock either, this is lockstep: a simulation
+//! steps when its controller has answered, faster or slower than real time.
+//! Controllers can't tell, as long as they take their time steps from the
+//! states' stamps (`Sample::stamp_ns`) rather than from the clock.
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -23,19 +28,23 @@ pub enum Answer {
     Stop,
 }
 
-/// Waits up to `timeout` for an input caused by the message `asked` (see
-/// [`Node::last_sent_span`]). Every input that arrives meanwhile goes to
-/// `take`, answer or not: a command answering an earlier state is late, but
-/// still the newest there is.
+/// Waits up to `timeout` (`None`: for as long as it takes) for an input
+/// caused by the message `asked` (see [`Node::last_sent_span`]). Every input
+/// that arrives meanwhile goes to `take`, answer or not: a command answering
+/// an earlier state is late, but still the newest there is.
 pub fn wait_for_answer(
     node: &mut Node,
     asked: Option<u64>,
-    timeout: Duration,
+    timeout: Option<Duration>,
     mut take: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> io::Result<Answer> {
-    let deadline = Instant::now() + timeout;
+    let deadline = timeout.map(|t| Instant::now() + t);
     loop {
-        match node.next_event_timeout(deadline.saturating_duration_since(Instant::now()))? {
+        let event = match deadline {
+            Some(d) => node.next_event_timeout(d.saturating_duration_since(Instant::now()))?,
+            None => Some(node.next_event()?),
+        };
+        match event {
             Some(Event::Input { data, .. }) => {
                 take(&data)?;
                 if asked.is_some_and(|span| data.context().parent == span) {
@@ -48,13 +57,24 @@ pub fn wait_for_answer(
     }
 }
 
-/// `--cycle same|next`: whether a command acts in the cycle of the state it
-/// answers, or in the next one.
-pub fn same_cycle_arg() -> io::Result<bool> {
+/// When a command acts, relative to the state it answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cycle {
+    /// In the same cycle, if it comes before the deadline.
+    Same,
+    /// At the next tick: a constant one-period delay.
+    Next,
+    /// When it comes: no deadline, no clock. Only for simulations.
+    Lockstep,
+}
+
+/// `--cycle same|next|lockstep`, `same` by default.
+pub fn cycle_arg() -> io::Result<Cycle> {
     match crate::arg("cycle", String::from("same"))?.as_str() {
-        "same" => Ok(true),
-        "next" => Ok(false),
-        other => Err(io::Error::other(format!("--cycle: `same` or `next`, not {other:?}"))),
+        "same" => Ok(Cycle::Same),
+        "next" => Ok(Cycle::Next),
+        "lockstep" => Ok(Cycle::Lockstep),
+        other => Err(io::Error::other(format!("--cycle: `same`, `next` or `lockstep`, not {other:?}"))),
     }
 }
 

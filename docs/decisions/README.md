@@ -33,3 +33,5 @@ Superseded records stay, with a link to what replaced them.
 | [0025](0025-microcontroller-nodes.md) | A microcontroller is a node, behind a bridge on a serial link | Accepted |
 | [0026](0026-diagnostics.md) | Diagnostics: checks read from the system, answered by each daemon | Proposed |
 | [0027](0027-same-cycle.md) | Closing a control loop within its cycle, spinning while it closes | Proposed |
+| [0028](0028-stamps.md) | Stamps: every message says what moment it describes | Proposed |
+| [0029](0029-phases.md) | Phases: periodic loops tick on the clock's grid | Proposed |

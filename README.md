@@ -230,18 +230,33 @@ publishes the state, waits up to 300 µs for the command answering it, and
 applies it before the tick ends, instead of at the next one. `keel trace`
 shows it: about 20 µs from state to applied command, rather than a period
 (1 ms, `--cycle next`). Nodes on CPUs of their own can also spin instead of
-sleeping while they wait (`--spin-us`): about 15 µs with the simulation
-spinning, 1.3 µs with both sides.
+sleeping while they wait (`--spin-us`): 1.3 µs with both sides spinning, or
+3–4 µs with the controller spinning only around when states are due, for 6%
+of a core.
+
+Every message is stamped with the moment it describes (when the joints were
+read, the simulation's time), and the controller takes its time from the
+stamps. So it can't tell real time from a replay, or from a simulation in
+lockstep, which steps as soon as the controller answers:
+
+```sh
+keel run examples/control-lockstep.yml    # simulated time goes by over 100× faster
+```
 
 `examples/control-can.yml` puts the joint behind a CAN bus (SocketCAN, a
 raw socket): `keel-can` is the bus master, and `keel-can-motor` stands in
-for the drive at the other end of a virtual interface. No hardware, and no
-root either, in a network namespace:
+for the drive at the other end of a virtual interface, applying commands as
+their frames arrive. No hardware, and no root either, in a network namespace
+(where the system allows unprivileged ones; otherwise `sudo ip link add vcan0
+type vcan && sudo ip link set vcan0 up` once):
 
 ```sh
 unshare -rn sh -c 'ip link add vcan0 type vcan && ip link set vcan0 up &&
   ./target/debug/keel run examples/control-can.yml'
 ```
+
+[docs/control.md](docs/control.md) describes the control layer: its
+messages, nodes, cycles, stamps and phases, and how to write a controller.
 
 ### On a microcontroller
 
@@ -290,7 +305,8 @@ robot (127.0.0.1:7411)
 
 Other examples: `keel run examples/dataflow.yml` (talker/listener), and the
 benchmarks: `cargo build --release`, then `./target/release/keel run examples/bench.yml`
-(latency, throughput) or `examples/jitter.yml` (a 1 kHz loop).
+(latency, throughput), `examples/jitter.yml` (a 1 kHz loop) or `examples/hop.yml`
+and `hop-spin.yml` (one hop, one way, sleeping or spinning).
 
 ## Dataflow
 
@@ -330,6 +346,16 @@ two, on purpose):
 keel update examples/pipeline-two-machines.yml   # new code in, node by node
 ```
 
+Periodic loops tick on multiples of their period on the machine's clock, so
+loops of one period are in phase whenever they started; `phase_us` moves a
+node along its period, e.g. to report just before another reads:
+
+```yaml
+  - id: motor
+    path: ../target/debug/keel-can-motor
+    phase_us: 900           # 100 µs before the bus master's 1 ms tick
+```
+
 Real-time priority needs the privilege: an rtprio limit (e.g.
 `/etc/security/limits.d/keel.conf` with `<user> - rtprio 95`), or
 `CAP_SYS_NICE`. Without it the daemon says so, and the rest applies.
@@ -348,7 +374,7 @@ crates/keel-daemon   runs dataflows: sessions, coordinator, daemon, control API
 crates/keel-cli      the `keel` command, including the `keel top` TUI
 crates/keel-record   recordings: the file format and the recorder node
 crates/keel-control  control, on top of the node API: joint messages, a PID,
-                     a simulated joint, joints on a CAN bus
+                     a simulated joint, joints on a CAN bus (docs/control.md)
 crates/keel-micro    a node on a microcontroller: no_std, no allocation
 crates/keel-serial   the node standing in for that chip on a serial port
 examples/            talker/listener, a camera pipeline, benchmarks, each also

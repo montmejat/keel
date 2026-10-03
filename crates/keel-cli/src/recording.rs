@@ -91,7 +91,8 @@ pub fn replay_node(recording: &Path, speed: f64) -> io::Result<()> {
             let due = now0 + Duration::from_nanos(record.t_ns.saturating_sub(t0)).div_f64(speed);
             std::thread::sleep(due.saturating_duration_since(Instant::now()));
         }
-        node.send_output(output, &record.payload)?;
+        let payload = &record.payload;
+        node.send_stamped(output, record.stamp_ns, payload.len(), |buf| buf.copy_from_slice(payload))?;
         count += 1;
     }
     println!("replayed {count} messages");
@@ -99,8 +100,8 @@ pub fn replay_node(recording: &Path, speed: f64) -> io::Result<()> {
 }
 
 /// `keel export <file> <dir>`: one file per message, `<channel>/<n>.bin`,
-/// and `index.csv` listing them with their time and trace span. `from` and
-/// `to` are seconds since the first record.
+/// and `index.csv` listing them with their time, trace span and stamp.
+/// `from` and `to` are seconds since the first record.
 pub fn export(recording: &Path, dir: &Path, channels: &[String], from: f64, to: f64) -> io::Result<()> {
     let mut reader = Reader::open(recording)?;
     let names: Vec<String> = reader.header.channels.iter().map(|c| c.input.clone()).collect();
@@ -116,7 +117,7 @@ pub fn export(recording: &Path, dir: &Path, channels: &[String], from: f64, to: 
     let keep: Vec<bool> = (0..names.len()).map(keep).collect();
     std::fs::create_dir_all(dir)?;
     let mut index = io::BufWriter::new(std::fs::File::create(dir.join("index.csv"))?);
-    writeln!(index, "channel,source,n,t_s,span,bytes,file")?;
+    writeln!(index, "channel,source,n,t_s,span,bytes,file,stamp_ns")?;
     let (mut first, mut counts, mut written) = (None, vec![0u64; names.len()], 0u64);
     while let Some(record) = reader.next_record()? {
         let ch = record.channel as usize;
@@ -132,11 +133,12 @@ pub fn export(recording: &Path, dir: &Path, channels: &[String], from: f64, to: 
         let source = &reader.header.channels[ch].source;
         writeln!(
             index,
-            "{},{source},{n},{t:.6},{:x},{},{}",
+            "{},{source},{n},{t:.6},{:x},{},{},{}",
             names[ch],
             record.span,
             record.payload.len(),
-            file.display()
+            file.display(),
+            record.stamp_ns
         )?;
         written += 1;
     }

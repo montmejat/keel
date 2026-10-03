@@ -7,7 +7,7 @@
 //! (see [`crate::trace`]), followed by the payload:
 //!
 //! ```text
-//! [refcount: u32][flags: u32][span: u64][trace: u64][parent: u64][published: u64][padding to 64][payload ...]
+//! [refcount: u32][flags: u32][span: u64][trace: u64][parent: u64][published: u64][stamp: u64][padding to 64][payload ...]
 //! ```
 //!
 //! A region is free when its count is 0. The sender sets it to 1 (a reference
@@ -82,7 +82,7 @@ impl Region {
     }
 
     fn header_u64(&self, index: usize) -> &AtomicU64 {
-        // SAFETY: indexes 1..=4 are 8-byte aligned words within HEADER_LEN.
+        // SAFETY: indexes 1..=5 are 8-byte aligned words within HEADER_LEN.
         unsafe { &*self.ptr.as_ptr().cast::<AtomicU64>().add(index) }
     }
 
@@ -96,6 +96,7 @@ impl Region {
             trace: self.header_u64(2).load(Ordering::Relaxed),
             parent: self.header_u64(3).load(Ordering::Relaxed),
             published_ns: self.header_u64(4).load(Ordering::Relaxed),
+            stamp_ns: self.header_u64(5).load(Ordering::Relaxed),
             sampled: flags.load(Ordering::Relaxed) & 1 != 0,
         }
     }
@@ -110,6 +111,7 @@ impl Region {
         self.header_u64(2).store(context.trace, Ordering::Relaxed);
         self.header_u64(3).store(context.parent, Ordering::Relaxed);
         self.header_u64(4).store(context.published_ns, Ordering::Relaxed);
+        self.header_u64(5).store(context.stamp_ns, Ordering::Relaxed);
     }
 
     /// Payload bytes this mapping covers.

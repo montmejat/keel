@@ -53,22 +53,22 @@ Worth having, but on its own it shortens a 1 ms loop by microseconds.
   | same cycle, both spinning, each pinned to a core | ~1.3 µs |
 
   The last one keeps the controller's CPU busy all the time: it can't know
-  when the next state comes. Knowing that is phasing (a shared epoch, the
-  next step), which would let it wake just before.
+  when the next state comes. Knowing that is phasing
+  ([0029](0029-phases.md)): spinning only around its states, 6% of a CPU.
 - A controller that sends after dropping the state, or that isn't reacting
   to states at all, never answers in time: use `--cycle next` with it, or
   have it send with `send_caused_by`.
 - On a virtual CAN bus (`control-can.yml`), the command reaches `keel-can`
   4.0 µs after it's sent (p50; p99 9.7 µs), where it used to wait for the
   next tick: 950 µs (p50; p99 2.49 ms). That's up to the frames leaving.
-  The stand-in drive, `keel-can-motor`, applies them on its own tick, which
-  `keel trace` can't see (frames aren't traced), so the example's joint
-  still gets them up to a period late; a real drive applies a command when
-  it arrives.
+  The stand-in drive, `keel-can-motor`, applied them on its own tick (which
+  `keel trace` can't see: frames aren't traced), up to a period late; it now
+  applies them when they arrive, as a drive does ([0029](0029-phases.md)).
 - Drives that answer each command with their state (Damiao, in MIT mode)
   report a state taken when the previous command arrived. Closing the loop
   on a fresh state then needs a state request just before the tick, an
   offset within the cycle: phasing again.
 - Stepping the simulation only when the answer comes (lockstep) is this
-  with no deadline and no timer, but controllers take their time steps from
-  the wall clock today. It waits for a time stamp in the message header.
+  with no deadline and no timer. It needed controllers to take their time
+  steps from the messages, not the clock: done with stamps
+  ([0028](0028-stamps.md)), `--cycle lockstep`.

@@ -11,10 +11,18 @@
 #
 # A node that loses the bus (`ip link set vcan0 down`) fails, and is started
 # again until it's back.
+#
+# Every loop ticks on the same 1 ms grid; `phase_us` moves one along it. The
+# stand-in drive reports 100 µs before the master's tick, so the master reads
+# a fresh state, and the command answering it is applied when its frame
+# arrives, within the same millisecond. 100 µs, not less: a node that isn't
+# real-time can wake up to 50 µs late (the kernel's timer slack; `rt: {}`
+# makes it 1 ns).
 nodes:
   - id: motor
     path: ../target/debug/keel-can-motor
     args: ["--interface", "vcan0"]
+    phase_us: 900
     restart: on-failure
 
   - id: joints

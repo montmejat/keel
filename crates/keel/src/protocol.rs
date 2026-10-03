@@ -19,6 +19,9 @@ pub const ENV_DAEMON_SOCKET: &str = "KEEL_DAEMON_SOCKET";
 pub const ENV_SHM_DIR: &str = "KEEL_SHM_DIR";
 /// Set for nodes the dataflow marks real-time.
 pub const ENV_REALTIME: &str = "KEEL_REALTIME";
+/// Where in its cycle a node's periodic loops tick, in nanoseconds: see
+/// `periodic`.
+pub const ENV_PHASE: &str = "KEEL_PHASE_NS";
 /// The dataflow's name (its file's stem), for nodes that name things after it.
 pub const ENV_DATAFLOW: &str = "KEEL_DATAFLOW";
 /// The id of the deployment the node was started from, when there is one.
@@ -92,7 +95,8 @@ impl DaemonMsg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerMsg {
     /// `source/output` sent a message; its trace context and payload travel
-    /// with it. `published_ns` is on the sending machine's clock.
+    /// with it. `published_ns` and `stamp_ns` are on the sending machine's
+    /// clock.
     Data { source: String, output: String, context: Context, payload: Vec<u8> },
     /// `node` has exited: nothing more will come from it.
     Closed { node: String },
@@ -125,6 +129,7 @@ impl PeerMsg {
                 &context.parent.to_le_bytes(),
                 &context.published_ns.to_le_bytes(),
                 &(context.sampled as u32).to_le_bytes(),
+                &context.stamp_ns.to_le_bytes(),
                 payload,
             ],
         )
@@ -143,6 +148,7 @@ impl PeerMsg {
                     parent: f.u64()?,
                     published_ns: f.u64()?,
                     sampled: f.u32()? != 0,
+                    stamp_ns: f.u64()?,
                 },
                 payload: f.bytes()?,
             },
@@ -250,7 +256,7 @@ mod tests {
             PeerMsg::Data {
                 source: "camera".into(),
                 output: "frames".into(),
-                context: Context { span: 1, trace: 2, parent: 3, published_ns: 4, sampled: true },
+                context: Context { span: 1, trace: 2, parent: 3, published_ns: 4, stamp_ns: 5, sampled: true },
                 payload: vec![7; 1000],
             },
             PeerMsg::Closed { node: "camera".into() },

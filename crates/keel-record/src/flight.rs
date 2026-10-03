@@ -52,7 +52,7 @@ impl Ring {
     }
 
     /// Writes one record where the daemon can read it at once.
-    pub fn write(&mut self, channel: u16, span: u64, t_ns: u64, payload: &[u8]) -> io::Result<()> {
+    pub fn write(&mut self, channel: u16, span: u64, t_ns: u64, stamp_ns: u64, payload: &[u8]) -> io::Result<()> {
         let (n, since) = self.current;
         if since.elapsed() >= self.segment_len {
             self.writer = Writer::create(&segment(&self.dir, n + 1), &self.header)?;
@@ -61,7 +61,7 @@ impl Ring {
                 let _ = fs::remove_file(segment(&self.dir, old));
             }
         }
-        self.writer.write(channel, span, t_ns, payload)?;
+        self.writer.write(channel, span, t_ns, stamp_ns, payload)?;
         self.writer.flush()
     }
 }
@@ -83,7 +83,13 @@ pub fn save(dir: &Path, to: &Path, failure: Failure) -> io::Result<Option<(u64, 
             writer = Some(Writer::create(to, &header)?);
         }
         while let Some(record) = reader.next_record()? {
-            writer.as_mut().unwrap().write(record.channel, record.span, record.t_ns, &record.payload)?;
+            writer.as_mut().unwrap().write(
+                record.channel,
+                record.span,
+                record.t_ns,
+                record.stamp_ns,
+                &record.payload,
+            )?;
             (count, first, last) = (count + 1, first.min(record.t_ns), last.max(record.t_ns));
         }
     }
@@ -121,7 +127,7 @@ mod tests {
         assert_eq!(save(&ring_dir, &saved, failure.clone()).unwrap(), None, "nothing recorded yet");
         assert!(!saved.exists());
         for n in 0..100u64 {
-            ring.write(0, n, n * 1_000_000, &n.to_le_bytes()).unwrap();
+            ring.write(0, n, n * 1_000_000, n * 1_000_000, &n.to_le_bytes()).unwrap();
             std::thread::sleep(Duration::from_millis(1));
         }
         let (count, span) = save(&ring_dir, &saved, failure.clone()).unwrap().unwrap();

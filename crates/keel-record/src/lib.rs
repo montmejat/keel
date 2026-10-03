@@ -3,16 +3,18 @@
 //! A recording is one file:
 //!
 //! ```text
-//! KEELREC1\n
+//! KEELREC2\n
 //! <header: one JSON line>\n
-//! records: [len: u32][channel: u16][span: u64][t_ns: u64][payload: len - 18 bytes]
+//! records: [len: u32][channel: u16][span: u64][t_ns: u64][stamp_ns: u64][payload: len - 26 bytes]
 //! ```
 //!
 //! All integers little-endian. A channel is one recorded input, numbered in
 //! the order the header lists them. `span` is the message's trace span, so a
 //! record can be matched with `keel trace`. `t_ns` is when it was published,
 //! on the recording machine's monotonic clock (converted there if it came
-//! from another machine): replays keep the original spacing.
+//! from another machine): replays keep the original spacing. `stamp_ns` is
+//! the moment the data describes (`keel::trace::Context::stamp_ns`), which
+//! replays hand on unchanged.
 //!
 //! The header says which dataflow and deployment produced the data. There is
 //! no index: records are read in order, which is what replay and export do.
@@ -28,8 +30,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-pub const MAGIC: &[u8] = b"KEELREC1\n";
-const RECORD_HEADER: usize = 2 + 8 + 8;
+pub const MAGIC: &[u8] = b"KEELREC2\n";
+const RECORD_HEADER: usize = 2 + 8 + 8 + 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Header {
@@ -68,6 +70,7 @@ pub struct Record {
     pub channel: u16,
     pub span: u64,
     pub t_ns: u64,
+    pub stamp_ns: u64,
     pub payload: Vec<u8>,
 }
 
@@ -89,13 +92,14 @@ impl<W: Write> Writer<W> {
         Ok(Self { w })
     }
 
-    pub fn write(&mut self, channel: u16, span: u64, t_ns: u64, payload: &[u8]) -> io::Result<()> {
+    pub fn write(&mut self, channel: u16, span: u64, t_ns: u64, stamp_ns: u64, payload: &[u8]) -> io::Result<()> {
         let len = u32::try_from(RECORD_HEADER + payload.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "message too large to record"))?;
         self.w.write_all(&len.to_le_bytes())?;
         self.w.write_all(&channel.to_le_bytes())?;
         self.w.write_all(&span.to_le_bytes())?;
         self.w.write_all(&t_ns.to_le_bytes())?;
+        self.w.write_all(&stamp_ns.to_le_bytes())?;
         self.w.write_all(payload)
     }
 
@@ -123,7 +127,7 @@ impl<R: BufRead> Reader<R> {
         let mut magic = [0u8; MAGIC.len()];
         r.read_exact(&mut magic)?;
         if magic != MAGIC {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "not a keel recording"));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "not a keel recording (or one from an older keel)"));
         }
         let mut line = String::new();
         r.read_line(&mut line)?;
@@ -155,6 +159,7 @@ impl<R: BufRead> Reader<R> {
             channel: u16::from_le_bytes([body[0], body[1]]),
             span: u64_at(2),
             t_ns: u64_at(10),
+            stamp_ns: u64_at(18),
             payload: body.split_off(RECORD_HEADER),
         }))
     }
@@ -176,15 +181,15 @@ mod tests {
         };
         let mut file = Vec::new();
         let mut w = Writer::new(&mut file, &header).unwrap();
-        w.write(0, 7, 100, b"first").unwrap();
-        w.write(0, 8, 200, &[9; 1000]).unwrap();
+        w.write(0, 7, 100, 90, b"first").unwrap();
+        w.write(0, 8, 200, 190, &[9; 1000]).unwrap();
         w.flush().unwrap();
 
         let mut r = Reader::new(file.as_slice()).unwrap();
         assert_eq!(r.header.channels, header.channels);
         assert_eq!(
             r.next_record().unwrap().unwrap(),
-            Record { channel: 0, span: 7, t_ns: 100, payload: b"first".to_vec() }
+            Record { channel: 0, span: 7, t_ns: 100, stamp_ns: 90, payload: b"first".to_vec() }
         );
         assert_eq!(r.next_record().unwrap().unwrap().payload.len(), 1000);
         assert_eq!(r.next_record().unwrap(), None);

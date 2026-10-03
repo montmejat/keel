@@ -157,6 +157,7 @@ impl Tracing {
                     trace: event.trace,
                     parent: event.parent,
                     published_ns: 0,
+                    stamp_ns: 0,
                     sampled: true,
                 };
                 let input = || files.stats.as_ref().and_then(|s| s.input_name(event.aux as usize)).unwrap_or_default();

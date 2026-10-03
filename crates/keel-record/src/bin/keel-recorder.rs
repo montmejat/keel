@@ -53,7 +53,7 @@ fn main() -> std::io::Result<()> {
         println!("keeping the last {last:?} of {}, in memory", sources.join(", "));
         while let Event::Input { id, data } = node.next_event()? {
             let context = data.context();
-            ring.write(channel[id], context.span, context.published_ns, &data)?;
+            ring.write(channel[id], context.span, context.published_ns, context.stamp_ns, &data)?;
         }
         return Ok(());
     }
@@ -75,7 +75,7 @@ fn main() -> std::io::Result<()> {
     let (mut count, mut bytes) = (0u64, 0u64);
     while let Event::Input { id, data } = node.next_event()? {
         let context = data.context();
-        writer.write(channel[id], context.span, context.published_ns, &data)?;
+        writer.write(channel[id], context.span, context.published_ns, context.stamp_ns, &data)?;
         count += 1;
         bytes += data.len() as u64;
     }

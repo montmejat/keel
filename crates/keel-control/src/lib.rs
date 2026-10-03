@@ -7,7 +7,12 @@
 //! either unchanged, and swapping them is a change to the dataflow file.
 //!
 //! keel's payloads are raw bytes; this crate gives two of them a layout: one
-//! [`State`] or [`Command`] per joint, back to back, little-endian.
+//! [`State`] or [`Command`] per joint, back to back, little-endian. Their
+//! time is in keel's header, not here: a state's stamp is when its joints
+//! were read (or the simulation's time), and a command inherits it.
+//!
+//! `docs/control.md` describes the whole layer: nodes, cycles, stamps,
+//! phases, and how to write a controller.
 
 pub mod can;
 pub mod cycle;

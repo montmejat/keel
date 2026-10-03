@@ -86,6 +86,21 @@ impl Bus {
             },
         }
     }
+
+    /// Waits up to `timeout` for a frame to read; true if there's one.
+    /// `ppoll`, not `poll`: a control cycle is shorter than its milliseconds.
+    pub fn wait(&self, timeout: std::time::Duration) -> io::Result<bool> {
+        let mut fd = libc::pollfd { fd: self.socket.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        let ts = libc::timespec { tv_sec: timeout.as_secs() as _, tv_nsec: timeout.subsec_nanos() as _ };
+        // SAFETY: one valid pollfd, a valid timespec, no signal mask.
+        match unsafe { libc::ppoll(&mut fd, 1, &ts, std::ptr::null()) } {
+            -1 => match io::Error::last_os_error() {
+                e if e.kind() == io::ErrorKind::Interrupted => Ok(false),
+                e => Err(e),
+            },
+            n => Ok(n > 0),
+        }
+    }
 }
 
 /// Command for joint `n`: id `COMMAND + n`, the effort as an `f32`.

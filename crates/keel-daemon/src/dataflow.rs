@@ -42,6 +42,10 @@ pub struct NodeConfig {
     /// Real-time scheduling for this node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rt: Option<Realtime>,
+    /// Where in their cycle the node's periodic loops tick: this long after
+    /// each multiple of their period (see `keel::periodic`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_us: Option<u64>,
     /// Whether to start the node again when it exits.
     #[serde(default, skip_serializing_if = "is_default")]
     pub restart: Restart,

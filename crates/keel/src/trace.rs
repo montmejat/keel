@@ -3,7 +3,8 @@
 //! Every message carries a [`Context`] in its region header: its own span id,
 //! the trace it belongs to (the span of the message that started the chain),
 //! its parent (the message the sender was handling when it sent this one),
-//! when it was published, and whether its trace is sampled.
+//! when it was published, the moment its data describes, and whether its
+//! trace is sampled.
 //!
 //! Two files per node sit next to its regions, written by the node and read
 //! by the daemon:
@@ -40,7 +41,14 @@ pub struct Context {
     pub trace: u64,
     /// The message being handled when this one was sent; 0 for a root.
     pub parent: u64,
+    /// When keel was handed the message: for latencies.
     pub published_ns: u64,
+    /// The moment of the world the data describes: when a sensor was read,
+    /// a simulation's time. Chosen by the sender of a root (the time it was
+    /// published, unless it says otherwise) and inherited along the chain,
+    /// so a command carries the stamp of the state it answers. Controllers
+    /// take their time steps from it, not from when messages arrive.
+    pub stamp_ns: u64,
     pub sampled: bool,
 }
 

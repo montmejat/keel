@@ -72,7 +72,7 @@ keel leans on the kernel and on Linux conventions instead of reinventing them:
 | Descriptors between nodes | Lock-free rings in `/dev/shm` files |
 | Waking a receiver | `futex` on a word in shared memory (not `FUTEX_PRIVATE`) |
 | Real-time nodes | `SCHED_FIFO`, `sched_setaffinity`, `mlockall`, `PR_SET_TIMERSLACK` |
-| Periodic loops | `clock_nanosleep(TIMER_ABSTIME)` |
+| Periodic loops | `clock_nanosleep(TIMER_ABSTIME)`, on multiples of the period |
 | Timestamps | `clock_gettime(CLOCK_MONOTONIC)`, a vDSO call (~20 ns) |
 | Binaries that run anywhere | Static musl builds, linked by `rust-lld` |
 | Naming software | SHA-256 of the binary |
@@ -150,8 +150,14 @@ overlaps with systemd.
     the state it just published, and can spin while it waits; any node can
     spin instead of sleeping. State to applied command at 1 kHz: 1 ms
     before, ~20 µs now, 1.3 µs with both ends spinning
-    ([0027](decisions/0027-same-cycle.md)). Not yet: phasing loops against
-    a shared epoch, lockstep.
+    ([0027](decisions/0027-same-cycle.md)).
+20. **Time** (done): every message is stamped with the moment it describes,
+    inherited along its chain, kept by recordings; controllers take their
+    time from stamps, so a simulation can run in lockstep
+    ([0028](decisions/0028-stamps.md)). Periodic loops tick on the clock's
+    grid, at a phase the dataflow sets, and a node can spin only around
+    its inputs' schedule ([0029](decisions/0029-phases.md)). The control
+    layer is described in [control.md](control.md).
 
 ## Benchmarks
 

@@ -1,0 +1,17 @@
+# control-sim.yml in lockstep: no clock, the simulation steps as soon as the
+# controller has answered: over a hundred times faster than real time here.
+# The controller takes its time from the states' stamps, so it behaves as in
+# real time: `keel logs controller` shows the same trajectory, a second of
+# simulated time per line.
+nodes:
+  - id: joints
+    path: ../target/debug/keel-sim
+    args: ["--cycle", "lockstep"]
+    inputs:
+      command: { source: controller/command, keep: latest }
+
+  - id: controller
+    path: ../target/debug/keel-pid
+    args: ["--target", "1.0"]
+    inputs:
+      state: { source: joints/state, keep: latest }

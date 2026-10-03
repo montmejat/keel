@@ -34,7 +34,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use keel::channel::{self, Bell, Channel, Target, DAEMON};
 use keel::protocol::{
-    DaemonMsg, NodeMsg, PeerMsg, ENV_DAEMON_SOCKET, ENV_DATAFLOW, ENV_DEPLOYMENT, ENV_NODE_ID, ENV_REALTIME,
+    DaemonMsg, NodeMsg, PeerMsg, ENV_DAEMON_SOCKET, ENV_DATAFLOW, ENV_DEPLOYMENT, ENV_NODE_ID, ENV_PHASE, ENV_REALTIME,
     ENV_SHM_DIR,
 };
 use keel::shm::{self, HeldTable, Pool, Region};
@@ -612,6 +612,9 @@ impl Session {
         if node.rt.is_some() {
             command.env(ENV_REALTIME, "1");
         }
+        if let Some(phase_us) = node.phase_us {
+            command.env(ENV_PHASE, (phase_us * 1000).to_string());
+        }
         if let Some(deployment) = &*self.deployment.lock().unwrap() {
             command.env(ENV_DEPLOYMENT, deployment);
         }
@@ -799,6 +802,7 @@ impl Session {
                 Ok(Some(PeerMsg::Data { source, output, mut context, payload })) => {
                     let received = trace::now_ns();
                     context.published_ns = self.tracing.to_local(context.published_ns, &source);
+                    context.stamp_ns = self.tracing.to_local(context.stamp_ns, &source);
                     let targets = match self.inbound.get(&(source.clone(), output.clone())) {
                         Some(targets) => targets,
                         None => continue,

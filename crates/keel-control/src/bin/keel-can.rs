@@ -1,19 +1,21 @@
 //! Joints on a CAN bus: sends each `command` as frames, and publishes the
 //! `state` the drives report. A cyclic bus master: once per period it
-//! publishes what the drives reported, waits up to `--deadline-us` for the
-//! command that answers it, and sends that straight away (see
-//! [`keel_control::cycle`]). A command that misses the deadline goes out at
-//! the next tick, and the drives keep the previous one meanwhile. `--cycle
-//! next` sends every command at the next tick: up to a period of delay.
+//! publishes what the drives reported, stamped with when it read them, waits
+//! up to `--deadline-us` for the command that answers it, and sends that
+//! straight away (see [`keel_control::cycle`]). A command that misses the
+//! deadline goes out at the next tick, and the drives keep the previous one
+//! meanwhile. `--cycle next` sends every command at the next tick: up to a
+//! period of delay.
 //!
 //! `--interface can0 --joints 1 --hz 1000 --cycle same --deadline-us 300 --spin-us 0`
 
 use std::io;
 use std::time::{Duration, Instant};
 
+use keel::trace::now_ns;
 use keel::{Event, Node, Periodic};
 use keel_control::can::{self, Bus};
-use keel_control::cycle::{self, Answer, Misses};
+use keel_control::cycle::{self, Answer, Cycle, Misses};
 use keel_control::{arg, Command, State};
 
 /// Drives silent for this long get a line in the log.
@@ -26,7 +28,11 @@ fn main() -> io::Result<()> {
         return Err(io::Error::other(format!("a bus carries at most {} joints", can::MAX_JOINTS)));
     }
     let period = Duration::from_secs_f64(1.0 / arg("hz", 1000.0)?);
-    let same_cycle = cycle::same_cycle_arg()?;
+    let same_cycle = match cycle::cycle_arg()? {
+        Cycle::Same => true,
+        Cycle::Next => false,
+        Cycle::Lockstep => return Err(io::Error::other("--cycle lockstep is for simulations: a bus keeps time")),
+    };
     let deadline = Duration::from_micros(arg("deadline-us", 300)?);
     let bus = Bus::open(&interface)?;
     let mut node = Node::from_env()?;
@@ -56,6 +62,7 @@ fn main() -> io::Result<()> {
                 Event::Stop => return Ok(()),
             }
         }
+        let read_ns = now_ns();
         while let Some(frame) = bus.try_recv()? {
             if let Some((joint, state)) = can::as_state(&frame, joints) {
                 (states[joint], fresh[joint]) = (state, true);
@@ -68,10 +75,10 @@ fn main() -> io::Result<()> {
                 println!("`{interface}` is back");
             }
             (heard, complained) = (Instant::now(), false);
-            node.send_with("state", joints * State::LEN, |payload| State::write(&states, payload))?;
+            node.send_stamped("state", read_ns, joints * State::LEN, |payload| State::write(&states, payload))?;
             if same_cycle {
                 let asked = node.last_sent_span();
-                let answer = cycle::wait_for_answer(&mut node, asked, deadline, send)?;
+                let answer = cycle::wait_for_answer(&mut node, asked, Some(deadline), send)?;
                 if answer == Answer::Stop {
                     return Ok(());
                 }

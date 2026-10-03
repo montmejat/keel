@@ -61,6 +61,12 @@ impl Sample {
     pub fn context(&self) -> &Context {
         &self.context
     }
+
+    /// The moment of the world this message describes (see
+    /// [`Context::stamp_ns`]).
+    pub fn stamp_ns(&self) -> u64 {
+        self.context.stamp_ns
+    }
 }
 
 impl Deref for Sample {
@@ -141,6 +147,9 @@ pub struct Node {
     last_sampled_root_ns: u64,
     /// How long `next_event` spins on the bell before sleeping on it.
     spin_ns: u64,
+    /// `(period, phase)` of the inputs' arrivals, in nanoseconds, when they
+    /// come on a schedule: spin around those times only.
+    expected: Option<(u64, u64)>,
 }
 
 impl Node {
@@ -235,6 +244,7 @@ impl Node {
             last_input: Context::default(),
             last_sampled_root_ns: 0,
             spin_ns: 0,
+            expected: None,
         })
     }
 
@@ -244,6 +254,18 @@ impl Node {
     /// worth it on a CPU of its own (`rt: { cpus: [...] }`, ideally isolated).
     pub fn set_spin(&mut self, spin: std::time::Duration) {
         self.spin_ns = spin.as_nanos().min(u64::MAX as u128) as u64;
+    }
+
+    /// Like [`Node::set_spin`], for inputs that come on a schedule: every
+    /// `period`, around this node's phase (see [`periodic`]), like the states
+    /// of a bus master ticking at that period. The node spins from `spin`
+    /// before each expected arrival to `spin` after it, and sleeps in
+    /// between: a spinning node's answer for a few percent of a CPU. Set the
+    /// node's `phase_us` to when its inputs are sent.
+    pub fn set_spin_around(&mut self, spin: std::time::Duration, period: std::time::Duration) {
+        self.set_spin(spin);
+        let period = (period.as_nanos() as u64).max(1);
+        self.expected = Some((period, periodic::phase().as_nanos() as u64));
     }
 
     pub fn id(&self) -> &str {
@@ -272,14 +294,30 @@ impl Node {
     ///
     /// The message continues the trace of the latest input the node still
     /// holds, if any; otherwise it starts a new trace.
+    ///
+    /// Its stamp is that input's, or the time it's published if there's
+    /// none: see [`Node::send_stamped`] to say what moment it describes.
     pub fn send_with(&mut self, output_id: &str, len: usize, fill: impl FnOnce(&mut [u8])) -> io::Result<()> {
-        let holding = self.tracer.holding.load(Ordering::Relaxed);
-        let cause = (holding != 0 && holding == self.last_input.span).then_some(self.last_input);
-        self.send_traced(output_id, len, cause, fill)
+        let cause = self.holding();
+        self.send_traced(output_id, len, cause, None, fill)
+    }
+
+    /// Like [`Node::send_with`], stamped with the moment of the world the
+    /// data describes ([`trace::now_ns`] time, or a simulation's): when a
+    /// sensor was read, rather than when the message was sent.
+    pub fn send_stamped(
+        &mut self,
+        output_id: &str,
+        stamp_ns: u64,
+        len: usize,
+        fill: impl FnOnce(&mut [u8]),
+    ) -> io::Result<()> {
+        let cause = self.holding();
+        self.send_traced(output_id, len, cause, Some(stamp_ns), fill)
     }
 
     /// Like [`Node::send_with`], naming the input this message results from,
-    /// for nodes that combine several inputs.
+    /// for nodes that combine several inputs. It takes that input's stamp.
     pub fn send_caused_by(
         &mut self,
         output_id: &str,
@@ -287,7 +325,13 @@ impl Node {
         len: usize,
         fill: impl FnOnce(&mut [u8]),
     ) -> io::Result<()> {
-        self.send_traced(output_id, len, Some(cause.context), fill)
+        self.send_traced(output_id, len, Some(cause.context), None, fill)
+    }
+
+    /// The latest input, while the node still holds its sample.
+    fn holding(&self) -> Option<Context> {
+        let holding = self.tracer.holding.load(Ordering::Relaxed);
+        (holding != 0 && holding == self.last_input.span).then_some(self.last_input)
     }
 
     fn send_traced(
@@ -295,6 +339,7 @@ impl Node {
         output_id: &str,
         len: usize,
         cause: Option<Context>,
+        stamp_ns: Option<u64>,
         fill: impl FnOnce(&mut [u8]),
     ) -> io::Result<()> {
         self.tracer.stats.set_waiting(true);
@@ -308,15 +353,20 @@ impl Node {
         let now = trace::now_ns();
         self.tracer.stats.touch(now);
         let context = match cause {
-            Some(cause) => {
-                Context { span, trace: cause.trace, parent: cause.span, published_ns: now, sampled: cause.sampled }
-            }
+            Some(cause) => Context {
+                span,
+                trace: cause.trace,
+                parent: cause.span,
+                published_ns: now,
+                stamp_ns: stamp_ns.unwrap_or(cause.stamp_ns),
+                sampled: cause.sampled,
+            },
             None => {
                 let sampled = now.saturating_sub(self.last_sampled_root_ns) >= trace::SAMPLE_INTERVAL_NS;
                 if sampled {
                     self.last_sampled_root_ns = now;
                 }
-                Context { span, trace: span, parent: 0, published_ns: now, sampled }
+                Context { span, trace: span, parent: 0, published_ns: now, stamp_ns: stamp_ns.unwrap_or(now), sampled }
             }
         };
         self.pool.region(slot).set_context(&context);
@@ -380,28 +430,43 @@ impl Node {
             if deadline.is_some_and(|d| trace::now_ns() >= d) {
                 return Ok(None);
             }
+            let limit = deadline.unwrap_or(u64::MAX);
             self.tracer.stats.set_waiting(true);
-            if !self.spin_on_bell(seen, deadline) {
-                let now = trace::now_ns();
-                match deadline {
-                    None => self.bell.wait(seen, None),
-                    Some(d) if d > now => self.bell.wait(seen, Some(std::time::Duration::from_nanos(d - now))),
-                    // Past it: one last look at the channels, above.
-                    Some(_) => {}
-                }
+            let now = trace::now_ns();
+            let (from, until) = self.spin_window(now);
+            if now >= from && self.spin_until(seen, until.min(limit)) {
+                self.tracer.stats.set_waiting(false);
+                continue;
             }
+            // Asleep until a message, the deadline, or the next time to spin.
+            let now = trace::now_ns();
+            let wake = if self.expected.is_some() { self.spin_window(now).0 } else { u64::MAX }.min(limit);
+            if wake > now {
+                self.bell.wait(seen, (wake != u64::MAX).then(|| std::time::Duration::from_nanos(wake - now)));
+            }
+            // Past the deadline: one last look at the channels, above.
             self.tracer.stats.set_waiting(false);
         }
     }
 
-    /// Watches the bell for up to `spin_ns`, and not past `deadline`; true if
-    /// it rang. Senders only make a system call for a receiver that says
-    /// it's asleep, so while this runs a message costs them a few stores.
-    fn spin_on_bell(&self, seen: u32, deadline: Option<u64>) -> bool {
-        if self.spin_ns == 0 {
-            return false;
+    /// When to watch the bell rather than sleep on it, as [`trace::now_ns`]
+    /// times: `from` is `u64::MAX` for never.
+    fn spin_window(&self, now: u64) -> (u64, u64) {
+        match (self.spin_ns, self.expected) {
+            (0, _) => (u64::MAX, u64::MAX),
+            (spin, Some((period, phase))) if spin != u64::MAX => {
+                // The next arrival whose window isn't over.
+                let arrival = periodic::next_tick(now.saturating_sub(spin), period, phase);
+                (arrival.saturating_sub(spin), arrival.saturating_add(spin))
+            }
+            (spin, _) => (now, now.saturating_add(spin)),
         }
-        let until = trace::now_ns().saturating_add(self.spin_ns).min(deadline.unwrap_or(u64::MAX));
+    }
+
+    /// Watches the bell until `until` (`u64::MAX`: for ever); true if it
+    /// rang. Senders only make a system call for a receiver that says it's
+    /// asleep, so while this runs a message costs them a few stores.
+    fn spin_until(&self, seen: u32, until: u64) -> bool {
         loop {
             // Reading the clock costs more than a look at the bell: only
             // every so often.
