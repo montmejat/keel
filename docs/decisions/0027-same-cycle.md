@@ -58,10 +58,13 @@ Worth having, but on its own it shortens a 1 ms loop by microseconds.
 - A controller that sends after dropping the state, or that isn't reacting
   to states at all, never answers in time: use `--cycle next` with it, or
   have it send with `send_caused_by`.
-- `keel-can` not yet tried on a virtual bus here (no CAN interface on the
-  laptop without root). Its stand-in drive, `keel-can-motor`, applies
-  commands on its own tick, so the CAN example still has the drive's phase
-  in it; a real drive applies a command when it arrives.
+- On a virtual CAN bus (`control-can.yml`), the command reaches `keel-can`
+  4.0 µs after it's sent (p50; p99 9.7 µs), where it used to wait for the
+  next tick: 950 µs (p50; p99 2.49 ms). That's up to the frames leaving.
+  The stand-in drive, `keel-can-motor`, applies them on its own tick, which
+  `keel trace` can't see (frames aren't traced), so the example's joint
+  still gets them up to a period late; a real drive applies a command when
+  it arrives.
 - Drives that answer each command with their state (Damiao, in MIT mode)
   report a state taken when the previous command arrived. Closing the loop
   on a fresh state then needs a state request just before the tick, an

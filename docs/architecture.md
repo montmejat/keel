@@ -145,7 +145,7 @@ overlaps with systemd.
     in for it ([0025](decisions/0025-microcontroller-nodes.md)).
 18. **Diagnostics** (done): `keel doctor` checks a machine's fitness for a
     robot, here or through a daemon ([0026](decisions/0026-diagnostics.md)).
-19. **Closing the loop within the cycle** (done, on the simulation): a bus
+19. **Closing the loop within the cycle** (done, simulated and on vcan): a bus
     master or simulation waits, up to a deadline, for the command answering
     the state it just published, and can spin while it waits; any node can
     spin instead of sleeping. State to applied command at 1 kHz: 1 ms
