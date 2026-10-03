@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>keel timing</title>
+<meta name="description" content="Where the time goes in keel, animated and measured: a latency scale from 84 ns to 6.5 s, one message hop through shared memory, one control cycle, and loops in phase.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23121a19'/%3E%3Cpolyline points='4,20 12,20 14,9 18,25 20,20 28,20' fill='none' stroke='%238197ff' stroke-width='2.5' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="frame">
+  <header class="top">
+    <a class="wordmark" href="./">keel</a>
+    <nav class="links" aria-label="Site">
+      <a href="architecture.html">Architecture</a>
+      <a href="timing.html" aria-current="page">Timing</a>
+      <a href="https://github.com/montmejat/keel/tree/main/docs">Docs</a>
+      <a href="https://github.com/montmejat/keel">GitHub</a>
+    </nav>
+  </header>
+
+  <section class="hero" id="scale">
+    <div class="hero-text">
+      <div class="eyebrow"><span class="mag">10⁻⁸ s → 10¹ s</span><span>every number measured</span></div>
+      <h1>Where the time goes, from the cache line up</h1>
+      <p class="lede">Fifteen measurements on one axis: what the machine allows, what a keel hop costs, how fast a control loop closes, and what happens to data on its way.</p>
+    </div>
+    <div class="figure">
+      <div class="scroll"><svg id="scaleSvg" viewBox="0 0 1000 290" role="img" aria-label="Measured latencies on a logarithmic axis from 10 nanoseconds to 10 seconds"></svg></div>
+      <div class="detail" aria-live="polite">
+        <div class="val" id="dVal">519 ns</div>
+        <div class="what" id="dWhat">One keel hop between two cores, the receiver spinning</div>
+        <div class="why" id="dWhy">From publish to the receiver holding the message.</div>
+      </div>
+      <div class="controls">
+        <button class="btn" id="sweep" type="button">Sweep the scale</button>
+        <span class="note">Select a point for what it is and how it was measured.</span>
+      </div>
+    </div>
+    <p class="note">Measured on <span id="machine">a laptop (Intel Core Ultra 7 155H, powersave governor, no isolated cores, no real-time priority), one way unless marked; the Wi-Fi figures are a Raspberry Pi sending to that laptop</span>. A tuned machine (isolated cores, real-time priority) hasn't been measured yet.</p>
+  </section>
+
+  <section id="hop">
+    <div class="eyebrow"><span class="mag">10⁻⁷ – 10⁻⁵ s</span><span>transport</span></div>
+    <h2>One hop: a message changing hands</h2>
+    <p>The sender writes the payload once, in place, in shared memory. Only a descriptor moves: into the receiver's ring, then a bump of its bell. A sleeping receiver needs the kernel to wake it. A spinning one is already watching the bell, so the hop costs what it takes for a few cache lines to cross between cores.</p>
+    <div class="figure">
+      <div class="controls">
+        <div class="seg" role="group" aria-label="How the receiver waits">
+          <button type="button" data-wait="sleep" aria-pressed="true">Receiver sleeps</button>
+          <button type="button" data-wait="spin" aria-pressed="false">Receiver spins</button>
+        </div>
+        <div class="seg" role="group" aria-label="Payload size">
+          <button type="button" data-size="small" aria-pressed="true">64 B</button>
+          <button type="button" data-size="frame" aria-pressed="false">6.2 MB frame</button>
+        </div>
+        <button class="btn" id="hopPlay" type="button">Replay</button>
+      </div>
+      <div class="scroll"><svg id="hopSvg" viewBox="0 0 1000 320" role="img" aria-label="Animated diagram of one message hop through shared memory"></svg></div>
+      <div class="readouts">
+        <div class="readout"><span class="k">Publish → in the receiver's hands</span><span class="v accent" id="hopClock">6.0 µs</span></div>
+        <div class="readout"><span class="k">Step</span><span class="v text" id="hopStep">In the receiver's hands</span></div>
+        <div class="readout"><span class="k">Shown slower than real time</span><span class="v" id="hopSlow">press Replay</span></div>
+      </div>
+      <div class="lines"><span>Cache lines the receiver pulls from the sender's core:</span>
+        <span class="chip" data-line="bell">bell</span><span class="chip" data-line="ring">ring</span><span class="chip" data-line="entry">entry</span><span class="chip" data-line="header">header</span>
+        <span>· the machine's floor touches one</span></div>
+      <div class="bars" id="hopBars"></div>
+    </div>
+    <p class="note">The clock starts at the publish stamp: writing the payload comes before it and isn't part of a hop. The steps share the measured total evenly; only the total and its comparison with the floor are measured. Source: <code>examples/hop.yml</code>, <code>hop-floor</code>, decision 0027.</p>
+  </section>
+
+  <section id="cycle">
+    <div class="eyebrow"><span class="mag">10⁻⁶ – 10⁻³ s</span><span>control</span></div>
+    <h2>One control cycle: from a state to its command</h2>
+    <p>Every millisecond the joints publish their state and a controller answers with a command. Until milestone 19 the command waited for the next tick, a full period. Now the joints wait for the answer within the tick, up to a 300 µs deadline, and apply it at once. The rest is how the two sides wait.</p>
+    <div class="figure">
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Cycle mode">
+          <button type="button" data-mode="next" aria-pressed="false">Next cycle</button>
+          <button type="button" data-mode="same" aria-pressed="true">Same cycle</button>
+          <button type="button" data-mode="simspin" aria-pressed="false">Joints spin</button>
+          <button type="button" data-mode="around" aria-pressed="false">Spin around</button>
+          <button type="button" data-mode="both" aria-pressed="false">Both spin</button>
+        </div>
+        <button class="btn" id="cyclePlay" type="button">Replay</button>
+      </div>
+      <div class="scroll"><svg id="cycleSvg" viewBox="0 0 1000 330" role="img" aria-label="Timing diagram of a 1 millisecond control cycle"></svg></div>
+      <div class="readouts">
+        <div class="readout"><span class="k">State → command applied</span><span class="v accent" id="cyE2e">21 µs</span></div>
+        <div class="readout"><span class="k">Controller's CPU</span><span class="v" id="cyCpu">~0%</span></div>
+        <div class="readout"><span class="k">What waits</span><span class="v text" id="cyWho">The joints wait, asleep, up to 300 µs</span></div>
+      </div>
+    </div>
+    <p class="note">A simulated pendulum (<code>keel-sim</code>) and a PID (<code>keel-pid</code>) at 1 kHz; times are from sampled <code>keel trace</code> chains. Decisions 0027 and 0029.</p>
+
+    <div class="figure">
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Where loops tick">
+          <button type="button" data-phase="start" aria-pressed="false">Where they started</button>
+          <button type="button" data-phase="grid" aria-pressed="true">On the clock's grid</button>
+        </div>
+        <button class="btn" id="restartLoops" type="button">Restart the loops</button>
+      </div>
+      <div class="scroll"><svg id="phaseSvg" viewBox="0 0 1000 190" role="img" aria-label="Tick times of three periodic loops over five milliseconds"></svg></div>
+      <p class="note" id="phaseNote">Loops of one period tick on multiples of it on the machine's clock, whenever they started: the two arms' bus masters are in phase without being told. <code>phase_us: 900</code> puts the drive's report 100 µs before their tick.</p>
+    </div>
+  </section>
+
+  <footer>
+    <p class="note">The numbers live in <a href="https://github.com/montmejat/keel/blob/main/site/measurements.js">site/measurements.js</a>; their sources are the benchmarks in <a href="https://github.com/montmejat/keel/blob/main/docs/architecture.md#benchmarks">docs/architecture.md</a> and <a href="https://github.com/montmejat/keel/tree/main/docs/decisions">decisions 0027 to 0029</a>.</p>
+    <p class="note mono">Apache-2.0 · Rust only · Linux</p>
+  </footer>
+</div>
+<script src="measurements.js"></script>
+<script src="timing.js"></script>
+</body>
+</html>

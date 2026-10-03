@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>keel architecture</title>
+<meta name="description" content="How keel is built: processes and planes, a message's path through shared memory and across machines, the control layer, deployment, the Linux mechanisms underneath, and every design decision.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23121a19'/%3E%3Cpolyline points='4,20 12,20 14,9 18,25 20,20 28,20' fill='none' stroke='%238197ff' stroke-width='2.5' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="frame">
+  <header class="top">
+    <a class="wordmark" href="./">keel</a>
+    <nav class="links" aria-label="Site">
+      <a href="architecture.html" aria-current="page">Architecture</a>
+      <a href="timing.html">Timing</a>
+      <a href="https://github.com/montmejat/keel/tree/main/docs">Docs</a>
+      <a href="https://github.com/montmejat/keel">GitHub</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <div class="hero-text">
+      <div class="eyebrow"><span class="mag">milestone 20</span><span>the current design</span></div>
+      <h1>How keel is built</h1>
+      <p class="lede">Each layer is the smallest thing that works end to end; the interest is in the layers and the boundaries between them. Real robots are in scope: control, fieldbuses and microcontrollers are built on top, as crates of their own.</p>
+    </div>
+    <nav class="links" aria-label="On this page">
+      <a href="#layers">Layers</a><a href="#processes">Processes</a><a href="#message">A message</a><a href="#machines">Across machines</a><a href="#control">Control</a><a href="#deployment">Deployment</a><a href="#linux">Linux underneath</a><a href="#decisions">Decisions</a>
+    </nav>
+  </section>
+
+  <section id="layers">
+    <div class="eyebrow"><span class="mag">13 layers</span><span>one question each</span></div>
+    <h2>The layers, and the smallest answer to each</h2>
+    <div class="scroll">
+      <table class="data">
+        <thead><tr><th>Layer</th><th>Question it answers</th><th>Minimal version</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Transport</td><td>How do bytes move?</td><td>Shared memory on one machine (zero-copy), TCP between machines</td></tr>
+          <tr><td class="name">Real time</td><td>Can a control loop meet its deadlines?</td><td>SCHED_FIFO, pinned CPUs, no daemon on the data path, spinning where it pays</td></tr>
+          <tr><td class="name">Runtime</td><td>Who runs the nodes on a machine?</td><td>A per-machine daemon</td></tr>
+          <tr><td class="name">Lifecycle</td><td>Start, stop, crash, restart</td><td>Ordered startup and shutdown, restart policies, a watchdog, rolling updates</td></tr>
+          <tr><td class="name">Coordination</td><td>Which node runs where?</td><td>A coordinator that assigns nodes to daemons</td></tr>
+          <tr><td class="name">Time</td><td>When was this true, and when does a loop tick?</td><td>A stamp in every message's header; periodic loops on the clock's grid, at a phase the dataflow sets</td></tr>
+          <tr><td class="name">Control</td><td>Can a controller not care what it drives?</td><td>Joints are a node: state ⇄ command, the loop closed within its cycle</td></tr>
+          <tr><td class="name">Packaging</td><td>What exactly gets shipped?</td><td>Reproducible static binaries, identified by their hash</td></tr>
+          <tr><td class="name">Deployment</td><td>How does software reach a machine?</td><td><code>keel deploy</code> pushes missing hashes to a store on each daemon; rollback, branches, fleets</td></tr>
+          <tr><td class="name">Provisioning</td><td>How does a bare machine become a keel machine?</td><td><code>keel provision</code> over SSH, or <code>keel image</code>: keel as process 1</td></tr>
+          <tr><td class="name">Observability</td><td>Where does the time go?</td><td>Timestamps at every hop, traces from a source to everything it caused, clocks aligned by keel</td></tr>
+          <tr><td class="name">Recording</td><td>What happened, and can it happen again?</td><td>A recorder node, replay in place of the sources, a flight recorder, export to datasets</td></tr>
+          <tr><td class="name">Tooling</td><td>What's going on right now?</td><td>A <code>keel</code> CLI and TUI, clients of the daemons' control API</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="processes">
+    <div class="eyebrow"><span class="mag">processes</span><span>two planes</span></div>
+    <h2>A coordinator, a daemon per machine, a process per node</h2>
+    <div class="figure">
+      <div class="scroll">
+        <svg viewBox="0 0 1000 360" role="img" aria-label="Processes: tools talk to the coordinator, the coordinator to a daemon per machine, daemons to each other and to their nodes">
+          <defs>
+            <marker id="pa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 Z" class="head-accent"/></marker>
+            <marker id="pm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 Z" class="head-muted"/></marker>
+          </defs>
+          <rect x="40" y="20" width="210" height="56" rx="5" class="box"/>
+          <text x="54" y="44" font-size="13" font-weight="600">keel top · trace · ps</text>
+          <text x="54" y="62" font-size="11" class="muted">clients of the control API</text>
+          <rect x="380" y="20" width="240" height="56" rx="5" class="box"/>
+          <text x="394" y="44" font-size="13" font-weight="600">keel run</text>
+          <text x="394" y="62" font-size="11" class="muted">the coordinator</text>
+          <line x1="250" y1="48" x2="378" y2="48" class="wire-muted" marker-end="url(#pm)"/>
+          <text x="314" y="40" font-size="10" text-anchor="middle" class="muted">JSON lines</text>
+
+          <line x1="450" y1="76" x2="270" y2="158" class="wire-muted" marker-end="url(#pm)"/>
+          <line x1="550" y1="76" x2="730" y2="158" class="wire-muted" marker-end="url(#pm)"/>
+          <text x="500" y="112" font-size="11" text-anchor="middle">control: JSON lines over TCP</text>
+          <text x="500" y="128" font-size="10" text-anchor="middle" class="muted">spawn · start · stop, then events and logs back</text>
+
+          <rect x="120" y="160" width="260" height="64" rx="5" class="box"/>
+          <text x="134" y="184" font-size="13" font-weight="600">keel daemon · robot</text>
+          <text x="134" y="202" font-size="11" class="muted">spawns, routes, supervises</text>
+          <rect x="620" y="160" width="260" height="64" rx="5" class="box"/>
+          <text x="634" y="184" font-size="13" font-weight="600">keel daemon · base</text>
+          <text x="634" y="202" font-size="11" class="muted">spawns, routes, supervises</text>
+          <line x1="382" y1="182" x2="616" y2="182" class="wire" marker-end="url(#pa)"/>
+          <line x1="618" y1="204" x2="384" y2="204" class="wire" marker-end="url(#pa)"/>
+          <text x="500" y="246" font-size="11" text-anchor="middle" fill="var(--accent)">data: PeerMsg over TCP, one connection per direction</text>
+
+          <line x1="200" y1="224" x2="170" y2="288" class="wire-muted"/>
+          <line x1="300" y1="224" x2="320" y2="288" class="wire-muted"/>
+          <line x1="750" y1="224" x2="740" y2="288" class="wire-muted"/>
+          <text x="760" y="264" font-size="10" class="muted">Unix socket · /dev/shm</text>
+          <rect x="110" y="290" width="120" height="44" rx="5" class="box"/>
+          <text x="124" y="317" font-size="12">camera</text>
+          <rect x="260" y="290" width="120" height="44" rx="5" class="box"/>
+          <text x="274" y="317" font-size="12">recorder</text>
+          <rect x="680" y="290" width="120" height="44" rx="5" class="box"/>
+          <text x="694" y="317" font-size="12">detector</text>
+          <line x1="232" y1="312" x2="256" y2="312" class="wire" marker-end="url(#pa)"/>
+          <text x="244" y="352" font-size="10" text-anchor="middle" fill="var(--accent)">node to node, in shared memory</text>
+        </svg>
+      </div>
+    </div>
+    <div class="cols">
+      <div>
+        <h3>The data plane</h3>
+        <p>Messages between nodes. On a machine they go node to node through shared memory, and the daemon never touches them; between machines, daemon to daemon over TCP. It has to be fast.</p>
+      </div>
+      <div>
+        <h3>The control plane</h3>
+        <p>Registration, lifecycle, deployment, and the state and metrics the tools show. It can be slow and simple: JSON lines, over a Unix socket on a machine and TCP between them. The CLI, the TUI, the coordinator and deployment all speak only this.</p>
+      </div>
+      <div>
+        <h3>On one machine</h3>
+        <p><code>keel run</code> is then both the coordinator and the only daemon, in one process. The daemon is a small init for its nodes: process groups, <code>PR_SET_PDEATHSIG</code>, ordered stop, restarts.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="message">
+    <div class="eyebrow"><span class="mag">shared memory</span><span>three small files</span></div>
+    <h2>A message on one machine</h2>
+    <p>Everything a hop needs lives in files in the session's directory in <code>/dev/shm</code>, created by the daemon before the nodes start and mapped by each node. Byte by byte:</p>
+    <div class="figure">
+      <div class="scroll">
+        <svg viewBox="0 0 1000 300" role="img" aria-label="Byte layouts of a region header, a channel and a bell">
+          <text x="40" y="22" font-size="12" font-weight="600">region</text>
+          <text x="100" y="22" font-size="11" class="muted">&lt;node&gt;.&lt;slot&gt; · a 64-byte header, then the payload</text>
+          <g font-size="10" text-anchor="middle">
+            <rect x="40" y="34" width="46" height="36" class="box"/><text x="63" y="56">ref</text>
+            <rect x="86" y="34" width="46" height="36" class="box"/><text x="109" y="56">flags</text>
+            <rect x="132" y="34" width="92" height="36" class="box"/><text x="178" y="56">span</text>
+            <rect x="224" y="34" width="92" height="36" class="box"/><text x="270" y="56">trace</text>
+            <rect x="316" y="34" width="92" height="36" class="box"/><text x="362" y="56">parent</text>
+            <rect x="408" y="34" width="92" height="36" class="box"/><text x="454" y="56">published</text>
+            <rect x="500" y="34" width="92" height="36" class="box-accent"/><text x="546" y="56" fill="var(--accent)">stamp</text>
+            <rect x="592" y="34" width="184" height="36" class="box" stroke-dasharray="3 3"/><text x="684" y="56" class="muted">padding</text>
+            <rect x="776" y="34" width="204" height="36" class="box-accent"/><text x="878" y="56">payload, written in place</text>
+          </g>
+          <g font-size="9" class="muted" text-anchor="middle">
+            <text x="40" y="84" class="muted">0</text><text x="86" y="84" class="muted">4</text><text x="132" y="84" class="muted">8</text><text x="224" y="84" class="muted">16</text><text x="316" y="84" class="muted">24</text><text x="408" y="84" class="muted">32</text><text x="500" y="84" class="muted">40</text><text x="592" y="84" class="muted">48</text><text x="776" y="84" class="muted">64</text>
+          </g>
+
+          <text x="40" y="122" font-size="12" font-weight="600">channel</text>
+          <text x="112" y="122" font-size="11" class="muted">&lt;node&gt;.in.&lt;input&gt; · one sender, one receiver</text>
+          <g font-size="10" text-anchor="middle">
+            <rect x="40" y="134" width="92" height="36" class="box"/><text x="86" y="156">write</text>
+            <rect x="132" y="134" width="92" height="36" class="box"/><text x="178" y="156">read</text>
+            <rect x="224" y="134" width="92" height="36" class="box"/><text x="270" y="156">keep</text>
+            <rect x="316" y="134" width="92" height="36" class="box"/><text x="362" y="156">mailbox</text>
+            <rect x="408" y="134" width="368" height="36" class="box" stroke-dasharray="3 3"/><text x="592" y="156" class="muted">padding</text>
+            <rect x="776" y="134" width="204" height="36" class="box-accent"/><text x="878" y="156">64 × (slot, length)</text>
+          </g>
+          <g font-size="9" text-anchor="middle">
+            <text x="40" y="184" class="muted">0</text><text x="132" y="184" class="muted">8</text><text x="224" y="184" class="muted">16</text><text x="316" y="184" class="muted">24</text><text x="408" y="184" class="muted">32</text><text x="776" y="184" class="muted">64</text>
+          </g>
+
+          <text x="40" y="222" font-size="12" font-weight="600">bell</text>
+          <text x="84" y="222" font-size="11" class="muted">&lt;node&gt;.bell · one per receiving node, whichever input a message came on</text>
+          <g font-size="10" text-anchor="middle">
+            <rect x="40" y="234" width="46" height="36" class="box-accent"/><text x="63" y="256">seq</text>
+            <rect x="86" y="234" width="46" height="36" class="box"/><text x="109" y="256">wait</text>
+            <rect x="132" y="234" width="46" height="36" class="box"/><text x="155" y="256">stop</text>
+          </g>
+          <g font-size="9" text-anchor="middle">
+            <text x="40" y="284" class="muted">0</text><text x="86" y="284" class="muted">4</text><text x="132" y="284" class="muted">8</text><text x="178" y="284" class="muted">12</text>
+          </g>
+          <text x="210" y="256" font-size="10" class="muted">a futex word: senders bump seq, and call FUTEX_WAKE only when the receiver has set wait</text>
+        </svg>
+      </div>
+    </div>
+    <ol class="plain">
+      <li><strong>The sender takes a free region</strong> of its pool, one whose count is 0 (growing it if the payload is bigger), and writes the payload in place. A node has at most 32 regions: that bounds how many of its messages can be in flight.</li>
+      <li><strong>It fills the header</strong>: its span, the trace it belongs to, the message it was handling (its parent), when it was published, and the stamp, inherited from that parent unless the sender sets it. The reference count becomes the number of receivers, before any of them can see it.</li>
+      <li><strong>For each receiver</strong>, it puts the descriptor in the channel (with <code>keep: latest</code>, it swaps the mailbox and releases what it displaced), then bumps the receiver's bell.</li>
+      <li><strong>The receiver</strong> reads its bell, looks through its channels in turn, maps the region on first use and records the hop's latency. It sleeps on the bell's futex, spins on it, or spins only around when its inputs are due.</li>
+      <li><strong>Dropping the sample</strong> decrements the count. At 0 the sender can write there again, so a reader never sees a payload change under it.</li>
+    </ol>
+    <p class="note">The daemon creates these files, spawns the nodes and watches them, and isn't on this path at all (decisions <a href="https://github.com/montmejat/keel/blob/main/docs/decisions/0005-shared-memory-transport.md">0005</a>, <a href="https://github.com/montmejat/keel/blob/main/docs/decisions/0015-realtime-data-plane.md">0015</a>). Tracing adds a clock read and a few atomic adds per message on each side, into per-node files the daemon reads.</p>
+  </section>
+
+  <section id="machines">
+    <div class="eyebrow"><span class="mag">TCP</span><span>clocks aligned by keel</span></div>
+    <h2>Across machines</h2>
+    <div class="figure">
+      <div class="scroll">
+        <svg viewBox="0 0 1000 270" role="img" aria-label="A message from a node on one machine to a node on another, through both daemons">
+          <defs>
+            <marker id="ma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 Z" class="head-accent"/></marker>
+          </defs>
+          <text x="20" y="18" font-size="11" class="muted">robot</text>
+          <rect x="20" y="30" width="150" height="60" rx="5" class="box"/>
+          <text x="34" y="56" font-size="13" font-weight="600">camera</text>
+          <text x="34" y="74" font-size="10" class="muted">sends as usual</text>
+          <rect x="220" y="30" width="250" height="60" rx="5" class="box"/>
+          <text x="234" y="56" font-size="12">a channel to its daemon</text>
+          <text x="234" y="74" font-size="10" class="muted">@daemon.fwd.camera.frames</text>
+          <rect x="520" y="30" width="190" height="60" rx="5" class="box"/>
+          <text x="534" y="56" font-size="13" font-weight="600">daemon · robot</text>
+          <text x="534" y="74" font-size="10" class="muted">reads the payload in place</text>
+          <line x1="172" y1="60" x2="216" y2="60" class="wire" marker-end="url(#ma)"/>
+          <line x1="472" y1="60" x2="516" y2="60" class="wire" marker-end="url(#ma)"/>
+          <line x1="615" y1="92" x2="615" y2="156" class="wire" marker-end="url(#ma)"/>
+          <text x="630" y="118" font-size="11" fill="var(--accent)">PeerMsg over TCP</text>
+          <text x="630" y="134" font-size="10" class="muted">source, output, trace context, stamp, payload</text>
+          <text x="20" y="150" font-size="11" class="muted">base</text>
+          <rect x="520" y="160" width="190" height="60" rx="5" class="box"/>
+          <text x="534" y="186" font-size="13" font-weight="600">daemon · base</text>
+          <text x="534" y="204" font-size="10" class="muted">converts the times</text>
+          <rect x="220" y="160" width="250" height="60" rx="5" class="box-accent"/>
+          <text x="234" y="186" font-size="12">a region named after camera</text>
+          <text x="234" y="204" font-size="10" class="muted">copied in once, then zero-copy again</text>
+          <rect x="20" y="160" width="150" height="60" rx="5" class="box"/>
+          <text x="34" y="186" font-size="13" font-weight="600">detector</text>
+          <text x="34" y="204" font-size="10" class="muted">can't tell</text>
+          <line x1="518" y1="190" x2="474" y2="190" class="wire" marker-end="url(#ma)"/>
+          <line x1="218" y1="190" x2="174" y2="190" class="wire" marker-end="url(#ma)"/>
+          <text x="20" y="252" font-size="10" class="muted">The coordinator measures each daemon's clock offset with NTP's four-timestamp exchange; publish times and stamps are converted on arrival.</text>
+        </svg>
+      </div>
+    </div>
+    <p>A node sending to another machine doesn't know it: its output's route ends in a channel its daemon reads. The receiving daemon copies the payload into a region of its own and delivers it like a local message. One connection per direction and machine pair keeps a node's messages in order. Offsets are known to a few milliseconds over Wi-Fi: phases hold within a machine, not across (decisions <a href="https://github.com/montmejat/keel/blob/main/docs/decisions/0013-data-between-machines.md">0013</a>, <a href="https://github.com/montmejat/keel/blob/main/docs/decisions/0014-tracing-and-clocks.md">0014</a>).</p>
+  </section>
+
+  <section id="control">
+    <div class="eyebrow"><span class="mag">keel-control</span><span>a layer above keel</span></div>
+    <h2>Control: the dataflow is the hardware interface</h2>
+    <div class="figure">
+      <div class="scroll">
+        <svg viewBox="0 0 1000 290" role="img" aria-label="Control layers: controller, keel, joints as a bus master or a simulation, the wire, and the drives">
+          <rect x="40" y="10" width="920" height="50" rx="5" class="box"/>
+          <text x="56" y="34" font-size="13" font-weight="600">controller</text>
+          <text x="56" y="51" font-size="11" class="muted">keel-pid, or yours: sees state, sends command; takes its time steps from the states' stamps</text>
+          <rect x="40" y="70" width="920" height="34" rx="5" class="box-accent"/>
+          <text x="56" y="92" font-size="12" fill="var(--accent)">keel · state ⇄ command, stamped, in shared memory · answered within the cycle, up to a 300 µs deadline</text>
+          <rect x="40" y="114" width="440" height="50" rx="5" class="box"/>
+          <text x="56" y="138" font-size="13" font-weight="600">keel-can · a bus master</text>
+          <text x="56" y="155" font-size="11" class="muted">ticks each period, stamps the state when it read it</text>
+          <rect x="520" y="114" width="440" height="50" rx="5" class="box"/>
+          <text x="536" y="138" font-size="13" font-weight="600">keel-sim · a simulation</text>
+          <text x="536" y="155" font-size="11" class="muted">stamps simulated time; --cycle lockstep has no clock</text>
+          <rect x="40" y="174" width="440" height="30" rx="5" class="box" stroke-dasharray="5 4"/>
+          <text x="56" y="194" font-size="11">the wire · can0, or vcan0 in simulation</text>
+          <rect x="40" y="214" width="210" height="50" rx="5" class="box"/>
+          <text x="56" y="238" font-size="13" font-weight="600">drives</text>
+          <text x="56" y="255" font-size="11" class="muted">real motors</text>
+          <rect x="270" y="214" width="210" height="50" rx="5" class="box"/>
+          <text x="286" y="238" font-size="13" font-weight="600">keel-can-motor</text>
+          <text x="286" y="255" font-size="11" class="muted">stand-in, phase_us: 900</text>
+          <text x="536" y="200" font-size="11" class="muted">Or a chip: keel-serial stands in for a</text>
+          <text x="536" y="216" font-size="11" class="muted">microcontroller running keel-micro (no_std),</text>
+          <text x="536" y="232" font-size="11" class="muted">over a UART.</text>
+        </svg>
+      </div>
+    </div>
+    <div class="cols">
+      <div>
+        <h3>Cycles</h3>
+        <p>A bus master or simulation publishes its state and waits, up to a deadline, for the command that answers it (recognised by its trace parent), then applies it before the tick ends. <code>--cycle next</code> takes it at the next tick instead; <code>--cycle lockstep</code> steps a simulation when the answer comes.</p>
+      </div>
+      <div>
+        <h3>Stamps</h3>
+        <p>A state is stamped when its joints were read, or with the simulation's time; a command inherits its state's stamp. Controllers take their time steps from stamps, so real time, replay and lockstep look the same to them.</p>
+      </div>
+      <div>
+        <h3>Phases</h3>
+        <p>Periodic loops tick on multiples of their period on the machine's clock, so two arms' masters are in phase whenever they started; <code>phase_us</code> moves a node along its period. A node can spin only around when its inputs are due.</p>
+      </div>
+    </div>
+    <p class="note">The numbers are on the <a href="timing.html#cycle">timing page</a>; the details in <a href="https://github.com/montmejat/keel/blob/main/docs/control.md">docs/control.md</a> and decisions <a href="https://github.com/montmejat/keel/blob/main/docs/decisions/0021-control-layer.md">0021</a>, <a href="https://github.com/montmejat/keel/blob/main/docs/decisions/0027-same-cycle.md">0027</a> to <a href="https://github.com/montmejat/keel/blob/main/docs/decisions/0029-phases.md">0029</a>.</p>
+  </section>
+
+  <section id="deployment">
+    <div class="eyebrow"><span class="mag">by hash</span><span>build once, ship what's missing</span></div>
+    <h2>Deployment</h2>
+    <div class="figure">
+      <div class="scroll">
+        <svg viewBox="0 0 1000 120" role="img" aria-label="Deployment: build, hash, store, record, switch">
+          <defs>
+            <marker id="da" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 Z" class="head-accent"/></marker>
+          </defs>
+          <g font-size="12">
+            <rect x="10" y="20" width="170" height="64" rx="5" class="box"/><text x="24" y="46" font-weight="600">cargo build</text><text x="24" y="66" font-size="10" class="muted">static musl, reproducible</text>
+            <rect x="210" y="20" width="170" height="64" rx="5" class="box"/><text x="224" y="46" font-weight="600">SHA-256</text><text x="224" y="66" font-size="10" class="muted">the binary's name</text>
+            <rect x="410" y="20" width="170" height="64" rx="5" class="box"/><text x="424" y="46" font-weight="600">store/&lt;sha256&gt;</text><text x="424" y="66" font-size="10" class="muted">sent only if missing</text>
+            <rect x="610" y="20" width="170" height="64" rx="5" class="box"/><text x="624" y="46" font-weight="600">a deployment</text><text x="624" y="66" font-size="10" class="muted">dataflow, binaries, rustc</text>
+            <rect x="810" y="20" width="170" height="64" rx="5" class="box-accent"/><text x="824" y="46" font-weight="600">current</text><text x="824" y="66" font-size="10" class="muted">a symlink, rename(2)</text>
+          </g>
+          <line x1="182" y1="52" x2="206" y2="52" class="wire" marker-end="url(#da)"/>
+          <line x1="382" y1="52" x2="406" y2="52" class="wire" marker-end="url(#da)"/>
+          <line x1="582" y1="52" x2="606" y2="52" class="wire" marker-end="url(#da)"/>
+          <line x1="782" y1="52" x2="806" y2="52" class="wire" marker-end="url(#da)"/>
+          <text x="10" y="110" font-size="10" class="muted">x86_64 or aarch64, per node's machine · daemons keep a binary while some deployment names it; keel gc removes the rest</text>
+        </svg>
+      </div>
+    </div>
+    <ul class="plain">
+      <li><strong>History and rollback</strong>: each deployment is recorded; <code>keel rollback</code> switches back, <code>keel update</code> brings new code into a running dataflow node by node.</li>
+      <li><strong>Branches</strong>: a deployed dataflow has named branches, to try something without losing what works; <code>keel diff</code> compares them node by node.</li>
+      <li><strong>Fleets</strong>: each robot is a deployment of its own; <code>keel fleet update --only robot-3</code> tries new code on one robot first.</li>
+      <li><strong>Machines</strong>: <code>keel provision</code> installs keel over SSH as a systemd service with real-time limits and a shared token; <code>keel image</code> builds a 4.5 MB initramfs where keel is process 1.</li>
+    </ul>
+  </section>
+
+  <section id="linux">
+    <div class="eyebrow"><span class="mag">no reinvention</span><span>6 direct dependencies</span></div>
+    <h2>The Linux underneath</h2>
+    <div class="scroll">
+      <table class="data">
+        <thead><tr><th>Need</th><th>Linux mechanism</th></tr></thead>
+        <tbody>
+          <tr><td>Isolation between nodes</td><td>Processes</td></tr>
+          <tr><td>Zero-copy payloads</td><td>Files in <code>/dev/shm</code> (tmpfs) + <code>mmap(MAP_SHARED)</code></td></tr>
+          <tr><td>Buffer ownership</td><td>Atomic reference counts in the shared pages</td></tr>
+          <tr><td>Descriptors between nodes</td><td>Lock-free rings in <code>/dev/shm</code> files</td></tr>
+          <tr><td>Waking a receiver</td><td><code>futex</code> on a word in shared memory (not <code>FUTEX_PRIVATE</code>)</td></tr>
+          <tr><td>Control and discovery</td><td>Unix sockets in <code>$XDG_RUNTIME_DIR</code>, found by listing a directory</td></tr>
+          <tr><td>Liveness of a daemon</td><td><code>/proc/&lt;pid&gt;</code></td></tr>
+          <tr><td>Ctrl-C goes to the supervisor only</td><td>Process groups</td></tr>
+          <tr><td>Nodes die with the daemon</td><td><code>prctl(PR_SET_PDEATHSIG)</code></td></tr>
+          <tr><td>Stop, then insist</td><td><code>Stop</code> message → SIGTERM → SIGKILL</td></tr>
+          <tr><td>Logs</td><td>stdout/stderr pipes, prefixed lines</td></tr>
+          <tr><td>Real-time nodes</td><td><code>SCHED_FIFO</code>, <code>sched_setaffinity</code>, <code>mlockall</code>, <code>PR_SET_TIMERSLACK</code></td></tr>
+          <tr><td>Periodic loops</td><td><code>clock_nanosleep(TIMER_ABSTIME)</code>, on multiples of the period</td></tr>
+          <tr><td>Timestamps</td><td><code>clock_gettime(CLOCK_MONOTONIC)</code>, a vDSO call (~20 ns)</td></tr>
+          <tr><td>Joints on a fieldbus</td><td>SocketCAN: a raw socket, <code>vcan</code> for a virtual bus</td></tr>
+          <tr><td>Binaries that run anywhere</td><td>Static musl builds, linked by <code>rust-lld</code></td></tr>
+          <tr><td>Naming software</td><td>SHA-256 of the binary</td></tr>
+          <tr><td>Switching versions atomically</td><td>A symlink replaced with <code>rename(2)</code></td></tr>
+          <tr><td>Bootstrapping a machine</td><td><code>ssh</code>, piping the binary through its stdin</td></tr>
+          <tr><td>Running the daemon</td><td>A systemd unit (<code>LimitRTPRIO</code>, <code>LimitMEMLOCK</code>); logs in the journal</td></tr>
+          <tr><td>Authenticating connections</td><td>A 256-bit token from <code>/dev/urandom</code>, shared by <code>keel provision</code></td></tr>
+          <tr><td>Trace data out of the nodes</td><td>Lock-free rings and counters in <code>/dev/shm</code> files</td></tr>
+          <tr><td>Aligning machines' clocks</td><td>NTP's four-timestamp exchange, over the coordinator's own connection</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Direct dependencies: <code>libc</code>, <code>serde</code>, <code>serde_json</code>, <code>serde_yaml</code>, and in the CLI <code>clap</code> and <code>ratatui</code>. The closest relative on Linux is PipeWire: shared-memory buffers between processes, a daemon brokering the graph.</p>
+  </section>
+
+  <section id="decisions">
+    <div class="eyebrow"><span class="mag">29 records</span><span>context, choice, cost</span></div>
+    <h2>Every decision, written down</h2>
+    <div class="scroll">
+      <table class="data">
+        <thead><tr><th>#</th><th>Decision</th><th>Status</th></tr></thead>
+        <tbody id="decisionRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <p class="note">This page follows <a href="https://github.com/montmejat/keel/blob/main/docs/architecture.md">docs/architecture.md</a> and the <a href="https://github.com/montmejat/keel/tree/main/docs/decisions">decision records</a>; when they disagree, they're right.</p>
+    <p class="note mono">Apache-2.0 · Rust only · Linux</p>
+  </footer>
+</div>
+<script>
+// The decision records, newest last; the titles and files are the repository's.
+(() => {
+  const proposed = new Set(["0026", "0027", "0028", "0029"]);
+  const decisions = [
+    ["0001", "learning-project-whole-stack", "A learning project covering the whole stack, minimally"],
+    ["0002", "rust-only", "Rust only"],
+    ["0003", "raw-byte-payloads", "Payloads are raw bytes for now"],
+    ["0004", "data-and-control-planes", "Separate data and control planes"],
+    ["0005", "shared-memory-transport", "Zero-copy local transport over shared memory"],
+    ["0006", "coordinator-and-daemons", "One coordinator, one daemon per machine"],
+    ["0007", "tools-are-control-plane-clients", "CLI and TUI are clients of the control API"],
+    ["0008", "hand-rolled-wire-format", "Keep the hand-rolled wire format, for now"],
+    ["0009", "measure-before-optimizing", "Benchmark before each performance change"],
+    ["0010", "dependencies", "Build the core by hand, use crates at the edges"],
+    ["0011", "control-api", "Control API: JSON lines over a Unix socket"],
+    ["0012", "daemon-as-init", "The daemon is a small init for its nodes"],
+    ["0013", "data-between-machines", "Data between machines: TCP to the peer daemon, into its shared memory"],
+    ["0014", "tracing-and-clocks", "Tracing: timestamps at every hop, clocks aligned by keel"],
+    ["0015", "realtime-data-plane", "Real-time data plane: nodes talk directly, the daemon only sets up"],
+    ["0016", "packaging-and-deployment", "Packaging and deployment: reproducible static binaries, stored by hash"],
+    ["0017", "recording-and-replay", "Recording and replay: a recorder node, a flat file, replay in place"],
+    ["0018", "provisioning", "Provisioning over SSH, a systemd service, and a shared token"],
+    ["0019", "lifecycle", "Lifecycle: restart policies, a watchdog, rolling updates"],
+    ["0020", "branches", "Branches: a named list of deployments per dataflow"],
+    ["0021", "control-layer", "Control is a layer above keel, and hardware is a node"],
+    ["0022", "flight-recorder", "Flight recorder: the last seconds in shared memory, saved by the daemon on a failure"],
+    ["0023", "process-one", "keel as process 1: a machine that is a kernel and keel"],
+    ["0024", "fleet", "Fleet: each robot is a deployment of its own, the fleet acts on several"],
+    ["0025", "microcontroller-nodes", "A microcontroller is a node, behind a bridge on a serial link"],
+    ["0026", "diagnostics", "Diagnostics: checks read from the system, answered by each daemon"],
+    ["0027", "same-cycle", "Closing a control loop within its cycle, spinning while it closes"],
+    ["0028", "stamps", "Stamps: every message says what moment it describes"],
+    ["0029", "phases", "Phases: periodic loops tick on the clock's grid"],
+  ];
+  const base = "https://github.com/montmejat/keel/blob/main/docs/decisions/";
+  document.getElementById("decisionRows").innerHTML = decisions
+    .map(([n, slug, title]) => {
+      const p = proposed.has(n);
+      return `<tr><td class="num">${n}</td><td><a href="${base}${n}-${slug}.md">${title}</a></td><td><span class="status${p ? " proposed" : ""}">${p ? "proposed" : "accepted"}</span></td></tr>`;
+    })
+    .join("");
+})();
+</script>
+</body>
+</html>

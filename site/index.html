@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>keel</title>
+<meta name="description" content="A whole robotics middleware stack in about 9,000 lines of Rust: zero-copy transport, real time, control, deployment, tracing and recording, built on what Linux already ships.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23121a19'/%3E%3Cpolyline points='4,20 12,20 14,9 18,25 20,20 28,20' fill='none' stroke='%238197ff' stroke-width='2.5' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="frame">
+  <header class="top">
+    <a class="wordmark" href="./" aria-current="page">keel</a>
+    <nav class="links" aria-label="Site">
+      <a href="architecture.html">Architecture</a>
+      <a href="timing.html">Timing</a>
+      <a href="https://github.com/montmejat/keel/tree/main/docs">Docs</a>
+      <a href="https://github.com/montmejat/keel">GitHub</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <div class="hero-text">
+      <div class="eyebrow"><span class="mag">Rust · Linux</span><span>Apache-2.0</span></div>
+      <h1>A whole robotics middleware stack in about 9,000 lines of Rust</h1>
+      <p class="lede">Zero-copy transport, real time, control, deployment, tracing and recording, built on what Linux already ships. A learning project: each layer is the smallest thing that works, and every decision has a record.</p>
+    </div>
+    <div class="tiles">
+      <div class="tile"><span class="v">5.6 µs</span><span class="k">round trip between two nodes on a machine, zero-copy</span></div>
+      <div class="tile"><span class="v">5 M</span><span class="k">messages a second between two nodes</span></div>
+      <div class="tile"><span class="v accent">21 µs</span><span class="k">from a joint's state to its command applied at 1 kHz; 1.3 µs spinning</span></div>
+      <div class="tile"><span class="v">6</span><span class="k">direct dependencies; the rest is the kernel</span></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="doors">
+      <a class="door" href="architecture.html">
+        <span class="go">How it's built <span>→</span></span>
+        <p>Processes and planes, a message's path through shared memory and across machines, the control layer, the Linux it stands on, and the 29 decisions behind it.</p>
+      </a>
+      <a class="door" href="timing.html">
+        <span class="go">Where the time goes <span>→</span></span>
+        <p>From a cache line between two cores to a camera frame stuck on Wi-Fi, animated: one hop, one control cycle, and loops in phase. Every number measured.</p>
+      </a>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow"><span class="mag">the layers</span><span>what you type</span></div>
+    <h2>The stack</h2>
+    <div class="scroll">
+      <table class="data">
+        <thead><tr><th>Layer</th><th>What's in it</th><th>Commands</th><th>Read</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Provisioning</td><td>Install over SSH, or boot a machine whose only program is keel. Check it's fit for a robot.</td><td><code>keel provision</code> · <code>keel image</code> · <code>keel doctor</code></td><td><a href="https://github.com/montmejat/keel/blob/main/docs/machines.md">machines</a></td></tr>
+          <tr><td class="name">Deployment</td><td>Builds named by hash, history, rollback, branches, fleets rolled out robot by robot.</td><td><code>keel deploy</code> · <code>keel branch</code> · <code>keel fleet</code></td><td><a href="https://github.com/montmejat/keel/blob/main/docs/deployment.md">deployment</a></td></tr>
+          <tr><td class="name">Runtime</td><td>Zero-copy transport, lifecycle, real-time scheduling, phases.</td><td><code>keel run</code> · <code>keel stop</code> · <code>keel update</code></td><td><a href="https://github.com/montmejat/keel/blob/main/docs/dataflow.md">dataflow</a></td></tr>
+          <tr><td class="name">Control</td><td>Joints, controllers, a CAN bus, a simulation in lockstep, microcontrollers.</td><td><code>keel-pid</code> · <code>keel-sim</code> · <code>keel-can</code></td><td><a href="https://github.com/montmejat/keel/blob/main/docs/control.md">control</a></td></tr>
+          <tr><td class="name">Observability</td><td>Every message traced and stamped, recordings, replay, a flight recorder.</td><td><code>keel top</code> · <code>keel trace</code> · <code>keel replay</code></td><td><a href="https://github.com/montmejat/keel/blob/main/docs/observability.md">observability</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow"><span class="mag">two terminals</span><span>a camera pipeline</span></div>
+    <h2>Try it</h2>
+<pre class="code"><span class="c"># a 1080p camera at 30 Hz, a detector, zero-copy; runs until stopped</span>
+git clone https://github.com/montmejat/keel && cd keel
+cargo build
+./target/debug/keel run examples/pipeline.yml
+
+<span class="c"># in another terminal</span>
+./target/debug/keel top      <span class="c"># live view: ↑↓ select, f filter logs, g graph, s stop, q quit</span>
+./target/debug/keel trace    <span class="c"># where the time goes</span>
+./target/debug/keel stop</pre>
+    <p class="note">Then <a href="https://github.com/montmejat/keel/blob/main/examples/README.md">the examples</a>: a control loop, a virtual CAN bus, two machines, a fleet, a flight recorder, the benchmarks.</p>
+  </section>
+
+  <footer>
+    <p class="note">keel is a learning project: how does a robotics middleware fit together when each layer is the smallest thing that works? Every design choice has a <a href="https://github.com/montmejat/keel/tree/main/docs/decisions">decision record</a>.</p>
+    <p class="note mono">Apache-2.0 · Rust only · Linux</p>
+  </footer>
+</div>
+</body>
+</html>

@@ -16,6 +16,7 @@
 </p>
 
 <p align="center">
+  <a href="https://montmejat.github.io/keel/"><b>Website</b></a> ·
   <a href="#the-stack">Stack</a> ·
   <a href="#try-it">Try it</a> ·
   <a href="#docs">Docs</a> ·
@@ -67,6 +68,7 @@ two machines, a fleet, a flight recorder, the benchmarks.
 
 | | |
 |---|---|
+| [website](https://montmejat.github.io/keel/) | the architecture as diagrams, and where the time goes, animated |
 | [architecture](docs/architecture.md) | the design, the milestones, the benchmarks |
 | [dataflow](docs/dataflow.md) | the dataflow file, field by field, and the lifecycle |
 | [protocol](docs/protocol.md) | the control protocol tools use to look at and act on a daemon |
