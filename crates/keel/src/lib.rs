@@ -338,35 +338,70 @@ impl Node {
         Ok(())
     }
 
+    /// The span of the latest message this node sent, if any: what the
+    /// messages it causes downstream name as their parent (see
+    /// [`trace::Context`]). A bus master waiting for the command that answers
+    /// its state recognises it this way.
+    pub fn last_sent_span(&self) -> Option<u64> {
+        self.sent.checked_sub(1).map(|seq| trace::span_id(self.index, seq))
+    }
+
     /// Blocks until the next event.
     pub fn next_event(&mut self) -> io::Result<Event> {
+        loop {
+            if let Some(event) = self.wait_event(None)? {
+                return Ok(event);
+            }
+        }
+    }
+
+    /// Like [`Node::next_event`], giving up after `timeout`: for a loop that
+    /// waits for an answer within its cycle, and carries on without it if
+    /// it's late. With [`Node::set_spin`], spins for the shorter of the two.
+    pub fn next_event_timeout(&mut self, timeout: std::time::Duration) -> io::Result<Option<Event>> {
+        let deadline = trace::now_ns().saturating_add(timeout.as_nanos().min(u64::MAX as u128) as u64);
+        self.wait_event(Some(deadline))
+    }
+
+    /// The next event, or `None` once `deadline` (a [`trace::now_ns`] time)
+    /// has passed.
+    fn wait_event(&mut self, deadline: Option<u64>) -> io::Result<Option<Event>> {
         loop {
             let seen = self.bell.seq();
             // Read before polling: once stop is set, every message sent by
             // upstream nodes is already in our channels.
             let stop = self.bell.stop_requested();
             if let Some(event) = self.poll()? {
-                return Ok(event);
+                return Ok(Some(event));
             }
             if stop {
-                return Ok(Event::Stop);
+                return Ok(Some(Event::Stop));
+            }
+            if deadline.is_some_and(|d| trace::now_ns() >= d) {
+                return Ok(None);
             }
             self.tracer.stats.set_waiting(true);
-            if !self.spin_on_bell(seen) {
-                self.bell.wait(seen, None);
+            if !self.spin_on_bell(seen, deadline) {
+                let now = trace::now_ns();
+                match deadline {
+                    None => self.bell.wait(seen, None),
+                    Some(d) if d > now => self.bell.wait(seen, Some(std::time::Duration::from_nanos(d - now))),
+                    // Past it: one last look at the channels, above.
+                    Some(_) => {}
+                }
             }
             self.tracer.stats.set_waiting(false);
         }
     }
 
-    /// Watches the bell for up to `spin_ns`; true if it rang. Senders only
-    /// make a system call for a receiver that says it's asleep, so while this
-    /// runs a message costs them a few stores.
-    fn spin_on_bell(&self, seen: u32) -> bool {
+    /// Watches the bell for up to `spin_ns`, and not past `deadline`; true if
+    /// it rang. Senders only make a system call for a receiver that says
+    /// it's asleep, so while this runs a message costs them a few stores.
+    fn spin_on_bell(&self, seen: u32, deadline: Option<u64>) -> bool {
         if self.spin_ns == 0 {
             return false;
         }
-        let deadline = trace::now_ns().saturating_add(self.spin_ns);
+        let until = trace::now_ns().saturating_add(self.spin_ns).min(deadline.unwrap_or(u64::MAX));
         loop {
             // Reading the clock costs more than a look at the bell: only
             // every so often.
@@ -376,7 +411,7 @@ impl Node {
                 }
                 std::hint::spin_loop();
             }
-            if self.spin_ns != u64::MAX && trace::now_ns() >= deadline {
+            if until != u64::MAX && trace::now_ns() >= until {
                 return false;
             }
         }

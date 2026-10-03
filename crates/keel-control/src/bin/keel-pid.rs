@@ -1,7 +1,10 @@
 //! Holds every joint at a target position: a `command` for each `state`.
 //! It doesn't know what's behind them.
 //!
-//! `--target 1.0 --kp 40 --ki 40 --kd 4 --limit 10`
+//! `--spin-us` watches for states for that long before sleeping (see
+//! `Node::set_spin`): on a CPU of its own, a faster answer.
+//!
+//! `--target 1.0 --kp 40 --ki 40 --kd 4 --limit 10 --spin-us 0`
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -20,6 +23,7 @@ fn main() -> io::Result<()> {
     let pid =
         Pid::new(arg("kp", default.kp)?, arg("ki", default.ki)?, arg("kd", default.kd)?, arg("limit", default.limit)?);
     let mut node = Node::from_env()?;
+    node.set_spin(Duration::from_micros(arg("spin-us", 0)?));
     let mut pids: Vec<Pid> = Vec::new();
     let mut commands: Vec<Command> = Vec::new();
 

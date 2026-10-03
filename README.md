@@ -225,6 +225,14 @@ keel run examples/control-sim.yml    # keel-pid holding a simulated pendulum at 
 keel logs controller                 # "5s target 1: at 1.000 rad, +0.000 rad/s, pushing +4.13 N m"
 ```
 
+The loop closes within its cycle: the simulation (or the bus master)
+publishes the state, waits up to 300 µs for the command answering it, and
+applies it before the tick ends, instead of at the next one. `keel trace`
+shows it: about 20 µs from state to applied command, rather than a period
+(1 ms, `--cycle next`). Nodes on CPUs of their own can also spin instead of
+sleeping while they wait (`--spin-us`): about 15 µs with the simulation
+spinning, 1.3 µs with both sides.
+
 `examples/control-can.yml` puts the joint behind a CAN bus (SocketCAN, a
 raw socket): `keel-can` is the bus master, and `keel-can-motor` stands in
 for the drive at the other end of a virtual interface. No hardware, and no

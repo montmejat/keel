@@ -10,6 +10,7 @@
 //! [`State`] or [`Command`] per joint, back to back, little-endian.
 
 pub mod can;
+pub mod cycle;
 pub mod pid;
 pub mod plant;
 

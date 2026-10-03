@@ -145,6 +145,13 @@ overlaps with systemd.
     in for it ([0025](decisions/0025-microcontroller-nodes.md)).
 18. **Diagnostics** (done): `keel doctor` checks a machine's fitness for a
     robot, here or through a daemon ([0026](decisions/0026-diagnostics.md)).
+19. **Closing the loop within the cycle** (done, on the simulation): a bus
+    master or simulation waits, up to a deadline, for the command answering
+    the state it just published, and can spin while it waits; any node can
+    spin instead of sleeping. State to applied command at 1 kHz: 1 ms
+    before, ~20 µs now, 1.3 µs with both ends spinning
+    ([0027](decisions/0027-same-cycle.md)). Not yet: phasing loops against
+    a shared epoch, lockstep.
 
 ## Benchmarks
 
@@ -213,6 +220,26 @@ Across two daemons on one host, M6 also fixed a copy-per-field in the wire
 format's parser that M5 had made worse (five trace fields in front of the
 payload): 64 B 40 µs, 1 MiB 390 µs, 8 MiB 3.9 ms round trip (M4: 58 µs,
 476 µs, 5.6 ms).
+
+**Milestone 19, one hop one way**: `examples/hop.yml` sends a message every
+millisecond, like a control loop, and measures publish → in the receiver's
+hands; `hop-spin.yml` has the receiver spin instead of sleeping, and
+`hop-floor` measures the same with keel out of the way. Laptop (Core Ultra 7
+155H, powersave, no isolation), CPUs 2 and 4:
+
+```
+                       p50       p99     p99.9       max
+keel, sleeping      6.01µs    15.6µs   157.5µs    3.09ms
+keel, spinning       519ns    1.61µs    4.69µs    41.9µs
+floor, futex        5.00µs    11.4µs   327.3µs   844.9µs
+floor, spin          170ns    1.23µs    1.65µs    2.37µs
+```
+
+Between two hyperthreads of one core (CPUs 1 and 2), spinning: keel 229 ns,
+floor 84 ns. A 6.2 MB frame hops like 64 bytes (574 ns spinning); reading it
+then takes 79 µs. keel's ~350 ns above the floor is the hop touching four
+cache lines in turn (bell, ring, entry, region header) where the floor
+touches one.
 
 With shared memory, latency is flat at ~20 µs whatever the size: an 8 MiB frame went from
 29 ms to 22 µs round trip. The MB/s column is size × msg/s. Nothing reads or
