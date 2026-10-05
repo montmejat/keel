@@ -1,0 +1,10 @@
+[package]
+name = "agent-scenarios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+keel = { path = "../../crates/keel" }
+keel-control = { path = "../../crates/keel-control" }

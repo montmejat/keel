@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "agent-scenarios"
+version = "0.1.0"
+dependencies = [
+ "keel",
+ "keel-control",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -703,6 +711,14 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+]
+
+[[package]]
+name = "keel-mcp"
+version = "0.1.0"
+dependencies = [
+ "keel-daemon",
+ "serde_json",
 ]
 
 [[package]]

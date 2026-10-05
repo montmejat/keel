@@ -1,0 +1,18 @@
+# A scenario for an agent to diagnose: a filter that falls behind.
+# examples/agent/run.sh slow runs it, asks an agent what is wrong, and grades
+# the answer. Build with `cargo build --release` first.
+nodes:
+  - id: sensor
+    path: ../target/release/sensor
+
+  - id: filter
+    path: ../target/release/filter
+    args: ["--fault", "slow", "--after", "400"]
+    restart: on-failure
+    inputs:
+      reading: { source: sensor/reading, keep: latest }
+
+  - id: sink
+    path: ../target/release/sink
+    inputs:
+      filtered: filter/filtered

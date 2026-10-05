@@ -43,6 +43,7 @@ in [docs/architecture.md](docs/architecture.md), and every decision has a
 | Runtime | transport, lifecycle, real time, phases | `keel run` · `keel stop` · `keel update` | [dataflow](docs/dataflow.md) |
 | Control | joints, controllers, CAN, simulation, lockstep, microcontrollers | `keel-pid` · `keel-sim` · `keel-can` | [control](docs/control.md) |
 | Observability | tracing, recording, replay, a flight recorder | `keel top` · `keel trace` · `keel replay` | [observability](docs/observability.md) |
+| Agent | an agent looks at a running dataflow and says what is wrong, read-only | `keel-mcp` · `examples/agent/run.sh` | [decision 0030](docs/decisions/0030-agent-tools.md) |
 
 ## Try it
 
@@ -68,6 +69,7 @@ two machines, a fleet, a flight recorder, the benchmarks.
 |---|---|
 | [architecture](docs/architecture.md) | the design, the milestones, the benchmarks |
 | [dataflow](docs/dataflow.md) | the dataflow file, field by field, and the lifecycle |
+| [protocol](docs/protocol.md) | the control protocol tools use to look at and act on a daemon |
 | [machines](docs/machines.md) | provisioning, images, dataflows across machines, `keel doctor` |
 | [deployment](docs/deployment.md) | builds, history, rollback, branches, fleets |
 | [observability](docs/observability.md) | `keel top`, traces, recording, replay, the flight recorder |
@@ -85,6 +87,7 @@ crates/keel-control  control above the node API: joint messages, cycles, a PID,
                      a simulated joint, joints on a CAN bus
 crates/keel-micro    a node on a microcontroller: no_std, no allocation
 crates/keel-serial   the node standing in for that chip on a serial port
+crates/keel-mcp      an MCP server over the control API, for an agent to look at a dataflow
 examples/            dataflows and their nodes, benchmarks, containers, images
 ```
 

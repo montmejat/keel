@@ -22,6 +22,7 @@ Each file's header says what it shows and what it needs. Run with
 | `bench.yml` | round-trip latency and throughput, 64 B to 8 MiB |
 | `bench-two-machines.yml` | the same across two daemons |
 | `jitter.yml`, `jitter-rt.yml` | a 1 kHz loop's lateness, without and with real-time settings |
+| `agent-slow.yml`, `agent-stall.yml`, `agent-crash.yml` | a filter that fails in one way each, for an agent to diagnose with `keel-mcp`: `agent/run.sh stall` |
 | `hop.yml`, `hop-spin.yml` | one hop, one way, the receiver sleeping or spinning; `hop-floor` measures the machine without keel |
 
 `containers/run.sh` runs the pipeline with each machine in its own Podman
