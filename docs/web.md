@@ -12,16 +12,20 @@ keel web                            # prints http://127.0.0.1:7600/#<token>
 ```
 
 Open the address it prints, token included. It finds the running daemon
-itself, and finds the next one if the dataflow is restarted: the page says
-"waiting for a dataflow" until there is one.
+itself, and finds the next one if the dataflow is restarted, starting its
+graph and logs over: the page says "waiting for a dataflow" until there is
+one.
 
 ## What it shows
 
 - **The graph**, nodes in columns from the sources, links with their message
-  rate over the last second. A link whose source is running but whose
-  rate is zero is dashed red and says *stalled*; a node that takes messages
-  in and sends none out says *not sending*, whatever its state is. That is
-  how the stalled filter of `examples/agent/run.sh stall` looks.
+  rate over the last second. A link whose source is running but that hasn't
+  moved for 2 s is dashed amber and says *quiet* and for how long; a running
+  node whose inputs are moving but whose outputs have been quiet for 2 s says
+  *no output for* so long. These are facts, not verdicts: a node that sends
+  only now and then looks the same as a stuck one, and only the reader
+  knows which it is. The stalled filter of `examples/agent/run.sh stall`
+  shows both.
 - **Per node:** its state, restarts, and the worst p99 processing time of
   its inputs. Click a node to filter the logs to it, and to restart it.
 - **Needs you:** what an agent asked to do ([protocol](protocol.md), *Agents

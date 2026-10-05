@@ -18,6 +18,7 @@
     }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body {
     margin: 0; background: var(--bg); color: var(--fg);
     font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -50,9 +51,9 @@
   #graph { position: relative; overflow: auto; padding: 8px 18px 24px; }
   #graph svg { position: absolute; left: 0; top: 0; pointer-events: none; }
   .edge { fill: none; stroke: var(--idle); stroke-width: 1.5; }
-  .edge.stalled { stroke: var(--bad); stroke-dasharray: 4 4; }
+  .edge.quiet { stroke: var(--warn); stroke-dasharray: 4 4; }
   .edge-label { font-size: 11px; fill: var(--muted); text-anchor: middle; }
-  .edge-label.stalled { fill: var(--bad); }
+  .edge-label.quiet { fill: var(--warn); }
   .node {
     position: absolute; width: 176px; height: 84px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
     background: var(--surface); cursor: pointer; transition: border-color .15s;
@@ -153,7 +154,13 @@
   function clock(ms) { return '+' + (ms / 1000).toFixed(1) + 's'; }
 
   // ---- state
-  var status = null, latency = {}, history = {}, selected = null, lastStatusAt = 0;
+  var status = null, latency = {}, history = {}, moved = {}, selected = null, lastStatusAt = 0;
+  // The dataflow the state above belongs to: another one, or the same one
+  // started again, starts it over.
+  var seenPid = null, seenUptime = 0;
+  // A link that hasn't moved for this long is called quiet. Not stalled: a
+  // node may send only now and then, and only the reader can tell.
+  var QUIET_MS = 2000;
 
   // ---- connection
   function setConn(kind, text) {
@@ -180,6 +187,11 @@
   }
 
   function onStatus(s) {
+    if (s.pid !== seenPid || s.uptime_ms < seenUptime) {
+      history = {}; moved = {}; latency = {}; logLines = []; nextSeq = 0;
+      if (seenPid !== null) selected = null;
+    }
+    seenPid = s.pid; seenUptime = s.uptime_ms;
     status = s;
     lastStatusAt = Date.now();
     setConn('live', s.stopping ? 'stopping' : 'live');
@@ -189,6 +201,8 @@
       var h = history[l.source] || (history[l.source] = []);
       h.push([s.uptime_ms, l.messages]);
       while (h.length > 8) h.shift();
+      var m = moved[l.source];
+      if (!m || m.count !== l.messages) moved[l.source] = { count: l.messages, at: s.uptime_ms };
     });
     render();
   }
@@ -212,6 +226,11 @@
 
   // ---- graph
   var NODE_W = 176, NODE_H = 84, GAP_X = 96, GAP_Y = 22, PAD = 22;
+
+  function quietFor(source) {
+    var m = moved[source];
+    return m && status ? status.uptime_ms - m.at : 0;
+  }
 
   function linkRate(source) {
     var h = history[source];
@@ -269,30 +288,30 @@
       return;
     }
     var L = layout(status);
-    var up = status.uptime_ms > 3000;
-    // A node that takes messages in and sends none out is stuck, whatever it
-    // says its state is.
-    var inRate = {}, outRate = {};
+    // For each node: how long since one of its inputs last moved, and since
+    // any of its outputs did.
+    var inQuiet = {}, outQuiet = {};
     L.edges.forEach(function (e) {
-      var r = linkRate(e.source);
-      if (r === null) return;
-      inRate[e.to] = Math.max(inRate[e.to] || 0, r);
-      outRate[e.from] = Math.max(outRate[e.from] || 0, r);
+      var q = quietFor(e.source);
+      inQuiet[e.to] = Math.min(inQuiet[e.to] === undefined ? Infinity : inQuiet[e.to], q);
+      outQuiet[e.from] = Math.min(outQuiet[e.from] === undefined ? Infinity : outQuiet[e.from], q);
     });
+    var running = {};
+    status.nodes.forEach(function (n) { running[n.id] = n.state.state === 'running'; });
     var html = '<svg width="' + L.w + '" height="' + L.h + '">';
     var seen = {};
     L.edges.forEach(function (e) {
       var a = L.pos[e.from], b = L.pos[e.to];
       var x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2, x2 = b.x, y2 = b.y + NODE_H / 2;
       var mid = (x1 + x2) / 2;
-      var r = linkRate(e.source);
-      var src = status.nodes.filter(function (n) { return n.id === e.from; })[0];
-      var stalled = up && r !== null && r < 0.05 && src && src.state.state === 'running';
-      html += '<path class="edge' + (stalled ? ' stalled' : '') + '" d="M' + x1 + ',' + y1 + ' C' + mid + ',' + y1 + ' ' + mid + ',' + y2 + ' ' + x2 + ',' + y2 + '"/>';
+      var r = linkRate(e.source), q = quietFor(e.source);
+      var quiet = running[e.from] && q >= QUIET_MS;
+      html += '<path class="edge' + (quiet ? ' quiet' : '') + '" d="M' + x1 + ',' + y1 + ' C' + mid + ',' + y1 + ' ' + mid + ',' + y2 + ' ' + x2 + ',' + y2 + '"/>';
       var key = e.from + '>' + e.to;
-      if (!seen[key] && r !== null) {
+      if (!seen[key] && (r !== null || quiet)) {
         seen[key] = true;
-        html += '<text class="edge-label' + (stalled ? ' stalled' : '') + '" x="' + mid + '" y="' + ((y1 + y2) / 2 - 7) + '">' + (stalled ? 'stalled' : esc(rate(r))) + '</text>';
+        var label = quiet ? 'quiet ' + Math.floor(q / 1000) + 's' : rate(r);
+        html += '<text class="edge-label' + (quiet ? ' quiet' : '') + '" x="' + mid + '" y="' + ((y1 + y2) / 2 - 7) + '">' + esc(label) + '</text>';
       }
     });
     html += '</svg>';
@@ -301,8 +320,10 @@
       var bits = [];
       if (n.state.state === 'exited' && !n.state.success) bits.push('<span class="bad">' + esc(n.state.detail) + '</span>');
       else if (n.restarts > 0) bits.push('<span class="warn">' + n.restarts + ' restart' + (n.restarts > 1 ? 's' : '') + '</span>');
-      var stuck = up && st === 'running' && inRate[n.id] >= 1 && outRate[n.id] !== undefined && outRate[n.id] < 0.05;
-      if (stuck) bits.push('<span class="bad">not sending</span>');
+      // Taking messages in and sending none out, for a while: a fact, which
+      // may be a stuck node or one that sends only now and then.
+      var stuck = st === 'running' && inQuiet[n.id] < 1000 && outQuiet[n.id] !== undefined && outQuiet[n.id] >= QUIET_MS;
+      if (stuck) bits.push('<span class="warn">no output for ' + Math.floor(outQuiet[n.id] / 1000) + 's</span>');
       if (lat && lat.proc99 > 0) bits.push('p99 ' + esc(ns(lat.proc99)));
       html += '<div class="node' + (selected === n.id ? ' selected' : '') + '" data-id="' + esc(n.id) + '" style="left:' + p.x + 'px;top:' + p.y + 'px">' +
         '<div class="id"><span class="dot ' + (stuck ? 'starting' : st) + '"></span><span>' + esc(n.id) + '</span></div>' +
