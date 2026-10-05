@@ -138,6 +138,25 @@ enum Command {
         #[arg(long)]
         pid: Option<u32>,
     },
+    /// Kill a node of a running dataflow so that it starts again, as its
+    /// restart policy would after a crash
+    Restart {
+        node: String,
+        #[arg(long)]
+        pid: Option<u32>,
+    },
+    /// What an agent asked to do, waiting for you: list it, or do one by id
+    Approve {
+        id: Option<u64>,
+        #[arg(long)]
+        pid: Option<u32>,
+    },
+    /// Drop something an agent asked to do
+    Deny {
+        id: u64,
+        #[arg(long)]
+        pid: Option<u32>,
+    },
     /// Stop a running dataflow gracefully
     Stop {
         #[arg(long)]
@@ -292,6 +311,15 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
         Command::Daemon { listen } => keel_daemon::serve(&listen)?,
         Command::Ps => ps()?,
         Command::Top { pid } => top::run(pick(pid)?)?,
+        Command::Restart { node, pid } => {
+            Client::connect(pick(pid)?)?.restart(&node)?;
+            println!("restarting {node}");
+        }
+        Command::Approve { id, pid } => approve(pick(pid)?, id)?,
+        Command::Deny { id, pid } => {
+            Client::connect(pick(pid)?)?.deny(id)?;
+            println!("denied {id}");
+        }
         Command::Events { interval_ms, pid } => events(pick(pid)?, interval_ms)?,
         Command::Logs { node, follow, pid } => logs(pick(pid)?, node.as_deref(), follow)?,
         Command::Stop { pid } => {
@@ -520,6 +548,28 @@ fn history(name: Option<&str>) -> Result<(), Box<dyn Error>> {
                 d.rustc.strip_prefix("rustc ").unwrap_or(&d.rustc).split(' ').next().unwrap_or(""),
             );
         }
+    }
+    Ok(())
+}
+
+/// Lists what agents asked to do, or does one of it.
+fn approve(pid: u32, id: Option<u64>) -> Result<(), Box<dyn Error>> {
+    let mut client = Client::connect(pid)?;
+    if let Some(id) = id {
+        println!("approved {id}: {:?}", client.approve(id)?);
+        return Ok(());
+    }
+    let actions = client.actions()?;
+    if actions.is_empty() {
+        println!("nothing was asked");
+    }
+    for a in actions {
+        let state = match (a.state, &a.outcome) {
+            (control::ActionState::Pending, _) => "waiting".to_owned(),
+            (control::ActionState::Denied, _) => "denied".to_owned(),
+            (control::ActionState::Approved, outcome) => outcome.clone().unwrap_or_else(|| "approved".into()),
+        };
+        println!("{:>4}  {:>9}  {} wants to {}  [{state}]", a.id, fmt::timestamp(a.asked_ms), a.client, a.summary);
     }
     Ok(())
 }

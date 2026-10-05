@@ -94,8 +94,10 @@ pub fn serve(listen: &str) -> io::Result<()> {
 
 fn idle_reply(request: Request) -> Reply {
     match request {
-        Request::Hello => control::hello(),
-        Request::Subscribe { .. } => Reply::Error("a subscription is served by the connection".into()),
+        Request::Hello { .. } => control::hello(),
+        Request::Subscribe { .. } | Request::Actions | Request::Approve { .. } | Request::Deny { .. } => {
+            control::served_by_the_connection()
+        }
         Request::Status => Reply::Status(Status {
             pid: std::process::id(),
             machine: None,
@@ -108,7 +110,7 @@ fn idle_reply(request: Request) -> Reply {
             deployment: None,
         }),
         Request::Logs { .. } => Reply::Logs(control::Logs { lines: Vec::new(), next: 0 }),
-        Request::Stop | Request::Trace { .. } | Request::Update { .. } => Reply::Error("no dataflow is running".into()),
+        Request::Stop | Request::Trace { .. } | Request::Update { .. } | Request::Restart { .. } => Reply::Error("no dataflow is running".into()),
     }
 }
 

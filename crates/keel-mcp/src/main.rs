@@ -1,6 +1,9 @@
-//! An MCP server for an agent to look at a running dataflow: the same control
-//! API `keel top` and `keel logs` use, and nothing more. Every tool only
-//! reads; there is nothing here that stops, updates or changes anything.
+//! An MCP server for an agent to look at a running dataflow, and to ask for
+//! changes to it: the same control API `keel top` and `keel logs` use.
+//!
+//! It connects as an agent, so what it asks that changes something (`stop`,
+//! `restart_node`) doesn't happen until a person says yes, with `keel approve`.
+//! The tool waits for the answer, and tells the agent what it was.
 //!
 //! MCP is JSON-RPC 2.0, one message per line, on stdin and stdout. Only what
 //! a client needs to list and call tools is implemented.
@@ -10,10 +13,15 @@
 //! ```
 
 use std::io::{self, BufRead, Write};
+use std::time::{Duration, Instant};
 
-use keel_daemon::control::{self, Client, NodeState};
+use keel_daemon::control::{self, ActionState, Client, NodeState, Reply};
 use keel_daemon::doctor;
 use serde_json::{json, Value};
+
+/// How long an acting tool waits for a person before telling the agent that it
+/// is still waiting.
+const WAIT_FOR_APPROVAL: Duration = Duration::from_secs(90);
 
 /// A reply longer than this is cut: an agent's context is not free.
 const MAX_LOG_LINES: usize = 200;
@@ -84,6 +92,19 @@ fn tools() -> Value {
             "inputSchema": {"type": "object", "properties": {"pid": pid}},
         },
         {
+            "name": "restart_node",
+            "description": "Kill a node so that it starts again, as its restart policy would after a crash. For a node that is stuck or stalled and has `restart` set in the dataflow. This changes the running system, so a person has to approve it first: the call waits for them (up to 90 s) and says what they decided.",
+            "inputSchema": {"type": "object", "required": ["node"], "properties": {
+                "pid": pid,
+                "node": {"type": "string", "description": "The node's id, from `status`."},
+            }},
+        },
+        {
+            "name": "stop",
+            "description": "Stop the whole dataflow gracefully. A person has to approve it first: the call waits for them (up to 90 s) and says what they decided. Use it only when nothing smaller fixes the problem.",
+            "inputSchema": {"type": "object", "properties": {"pid": pid}},
+        },
+        {
             "name": "doctor",
             "description": "Is this machine fit to run a robot: real-time limits, memory locking, CPU governor, clock, swap. Each check is ok, warn or fail, with what it costs.",
             "inputSchema": {"type": "object", "properties": {}},
@@ -139,6 +160,15 @@ fn call(tool: &str, args: &Value) -> Result<String, String> {
                 .collect();
             json(json!(rows))
         }
+        "restart_node" => {
+            let node = args["node"].as_str().ok_or("`node` is required")?;
+            let mut client = agent_client(args)?;
+            ask(&mut client, |c| c.restart(node))
+        }
+        "stop" => {
+            let mut client = agent_client(args)?;
+            ask(&mut client, |c| c.request(&control::Request::Stop))
+        }
         "doctor" => {
             let checks: Vec<Value> = (doctor::here().iter())
                 .map(|c| json!({"check": c.name, "level": format!("{:?}", c.level).to_lowercase(), "detail": c.detail}))
@@ -159,6 +189,33 @@ fn dataflows() -> Value {
         })
         .collect();
     json!(rows)
+}
+
+/// A connection that holds what it asks for until a person approves it.
+fn agent_client(args: &Value) -> Result<Client, String> {
+    let pid = control::pick(args["pid"].as_u64().map(|p| p as u32)).map_err(|e| e.replace("--pid", "`pid`"))?;
+    Client::connect_as_agent(pid, "keel-mcp").map_err(|e| e.to_string())
+}
+
+/// Sends a request that changes something, and waits for a person's answer.
+fn ask(client: &mut Client, send: impl FnOnce(&mut Client) -> io::Result<Reply>) -> Result<String, String> {
+    let id = match send(client).map_err(|e| e.to_string())? {
+        Reply::Pending { id } => id,
+        other => return Ok(format!("done: {other:?}")),
+    };
+    let until = Instant::now() + WAIT_FOR_APPROVAL;
+    while Instant::now() < until {
+        let actions = client.actions().map_err(|e| e.to_string())?;
+        if let Some(action) = actions.iter().find(|a| a.id == id) {
+            match action.state {
+                ActionState::Pending => {}
+                ActionState::Denied => return Err(format!("A person denied it (action {id}). Don't try it again; say what you found instead.")),
+                ActionState::Approved => return Ok(format!("A person approved it, and: {}", action.outcome.as_deref().unwrap_or("done"))),
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    Ok(format!("Still waiting for a person (action {id}). They can run `keel approve {id}`. Tell them what you want and why, and check `status` later."))
 }
 
 /// The daemon to ask: the `pid` argument, else the only one running.

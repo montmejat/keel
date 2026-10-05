@@ -16,9 +16,7 @@ what it may do there.
   ([0008](0008-hand-rolled-wire-format.md)). Any agent that speaks MCP can use it;
   no new dependency.
 - **Read-only to begin with.** Five tools: `dataflows`, `status`, `logs`,
-  `latency`, `doctor`. Nothing stops, updates or changes a thing. Acting
-  (`stop`, `update`, `rollback`) comes once there is a way to ask before it
-  happens.
+  `latency`, `doctor`. Acting came next, with a person in the way: see below.
 - **Answers made for reading.** Nodes' states in words, times in
   microseconds, logs cut to the last 200 lines; each tool's description says
   what a number means (a large processing time is a slow node, a large
@@ -42,3 +40,15 @@ what it may do there.
 - Not here yet: acting on what it found, asking before it does, faults a
   recording would explain, and code the agent writes itself to look
   further.
+
+## Acting, with a person in the way
+`keel-mcp` also has `restart_node` and `stop`. It connects as an agent, which
+the control protocol knows: what an agent asks that changes something waits
+as a pending action, and a person approves or denies it with `keel approve`
+and `keel deny`. The tool waits up to 90 s for the decision and tells the
+agent what it was, so a refusal reads as "don't try again" and a timeout as
+"say what you want and check later". The guard is in the daemon's control
+layer, not the MCP server: a different agent client gets the same rule by
+saying hello as an agent. A new `restart` request, which kills a node for its
+restart policy to bring back, is what an agent can do that is smaller than
+stopping everything.

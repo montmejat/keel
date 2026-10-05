@@ -24,15 +24,35 @@ reply's name. Any request may be answered with `{"error": "<text>"}`.
 
 | `cmd` | Other fields | Reply | What it does |
 |---|---|---|---|
-| `hello` | | `hello` | `{protocol, keel}`: the protocol version and the keel build |
+| `hello` | `agent`, `client` (optional) | `hello` | `{protocol, keel}`: the protocol version and the keel build. An agent says so here, see below |
 | `status` | | `status` | The graph: nodes, links, uptime, deployment |
 | `logs` | `since` | `logs` | Lines numbered `since` and after, from the last 10 000 kept |
 | `trace` | `summary` (default false) | `trace` | Latency per input; unless `summary`, also the sampled traces |
 | `subscribe` | `interval_ms` (default 250, at least 50) | `subscribed`, then `event`s | Turns the connection into a stream, see below |
+| `restart` | `node` | `restarted` | Kills a node so it starts again, as its restart policy would after a crash, without counting against its restarts. Refused for `restart: never` |
+| `actions` | | `actions` | What agents asked to do, waiting or decided |
+| `approve` | `id` | what the action answers | Does what an agent asked for |
+| `deny` | `id` | `denied` | Drops it |
 | `stop` | | `stopping` | Stops the dataflow gracefully |
 | `update` | `deployment`, `binaries` | `updating` | Rolls a new deployment in: nodes whose binary changed restart, one at a time. Answers with the nodes it replaces |
 
-`status`, `logs`, `trace` and `subscribe` only read. `stop` and `update` act.
+`status`, `logs`, `trace`, `subscribe` and `actions` only read. `stop`, `update` and `restart` act.
+
+## Agents ask, people decide
+
+A connection that says `{"cmd":"hello","agent":true,"client":"..."}` can read
+everything, but a request that acts (`stop`, `update`, `restart`) is not
+run. The reply is `{"pending":{"id":3}}`, and the request waits as an action
+until a person decides from another connection: `approve` runs it and
+answers what it would have, `deny` drops it. An agent's connection can't
+approve or deny. Each action keeps who asked, what it was, when, when it was
+decided, and what came of it; the last hundred decided are kept, and the
+daemon prints each ask and decision. `keel approve` lists them, or approves
+one by id; `keel deny` drops one.
+
+This is a guard against an agent doing what nobody wanted, not against one
+that has the person's own access: anything that can reach the socket without
+saying it is an agent acts directly.
 
 ## Streaming
 
@@ -90,8 +110,7 @@ Written down so the protocol grows in one direction. None of it exists.
   exits, a line is logged), not sampled.
 - **Rollback and start as requests.** `keel rollback` and `keel start` act
   on the deployment store of the machine you type them on, not through the
-  control API.
-- **Asking before acting.** An acting request from an agent waits for a human
-  to say yes: a `pending` reply, an `approve` request, a record of who did what.
+  control API, so an agent can't roll back yet.
+- **A record that outlives the daemon.** Actions are kept in memory.
 - **Over the network.** The socket is local. A gateway for a browser would
   speak the same messages over HTTP and WebSocket.

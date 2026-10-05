@@ -178,6 +178,9 @@ struct NodeInfo {
     started: Instant,
     /// Being replaced by an update: start it again whatever its policy.
     replacing: bool,
+    /// Killed on request: start it again whatever its policy, and don't count
+    /// it against its restarts, since it didn't fail.
+    restart_requested: bool,
 }
 
 impl State {
@@ -306,6 +309,7 @@ impl Session {
                             restarts: 0,
                             started: Instant::now(),
                             replacing: false,
+                            restart_requested: false,
                         };
                         (n.id.clone(), info)
                     })
@@ -504,8 +508,10 @@ impl Session {
 
     pub fn handle(&self, request: Request) -> Reply {
         match request {
-            Request::Hello => control::hello(),
-            Request::Subscribe { .. } => Reply::Error("a subscription is served by the connection".into()),
+            Request::Hello { .. } => control::hello(),
+            Request::Subscribe { .. } | Request::Actions | Request::Approve { .. } | Request::Deny { .. } => {
+                control::served_by_the_connection()
+            }
             Request::Status => Reply::Status(self.status()),
             Request::Logs { since } => {
                 let s = self.state.lock().unwrap();
@@ -517,11 +523,34 @@ impl Session {
                 Reply::Stopping
             }
             Request::Trace { summary } => Reply::Trace(self.tracing.report(!summary)),
+            Request::Restart { node } => match self.restart_node(&node) {
+                Ok(()) => Reply::Restarted(node),
+                Err(e) => Reply::Error(e),
+            },
             Request::Update { deployment, binaries } => match self.update(deployment, &binaries) {
                 Ok(nodes) => Reply::Updating(nodes),
                 Err(e) => Reply::Error(e.to_string()),
             },
         }
+    }
+
+    /// Kills a running node so that it starts again, as its restart policy
+    /// would after a crash. Only for a node whose policy says it comes back.
+    fn restart_node(&self, id: &str) -> Result<(), String> {
+        let mut s = self.state.lock().unwrap();
+        let Some(info) = s.nodes.get_mut(id) else { return Err(format!("{}`{id}`", control::NO_SUCH_NODE)) };
+        if self.configs[id].restart == Restart::Never {
+            return Err(format!("`{id}` has `restart: never`: killing it would end it, not restart it"));
+        }
+        let (NodeState::Running, Some(pid)) = (&info.state, info.pid) else {
+            return Err(format!("`{id}` is not running"));
+        };
+        info.restart_requested = true;
+        s.log("daemon", format!("restarting `{id}` on request"));
+        // SAFETY: plain syscall on a child we haven't reaped yet: its exit is
+        // seen by `after_exit`, which starts it again.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        Ok(())
     }
 
     fn status(&self) -> Status {
@@ -1025,20 +1054,26 @@ impl Session {
         let terminated = info.terminated && status.signal() == Some(libc::SIGTERM);
         let success = status.success() || terminated;
         let replacing = std::mem::take(&mut info.replacing);
-        if !success && !replacing && !stopping && !aborted && !told_to_stop {
+        let requested = std::mem::take(&mut info.restart_requested);
+        if !success && !replacing && !requested && !stopping && !aborted && !told_to_stop {
             self.save_flight(id, status.to_string());
         }
         if info.started.elapsed() > STABLE_AFTER {
             info.restarts = 0;
         }
         let wanted = replacing
+            || requested
             || match config.restart {
                 Restart::Never => false,
                 Restart::OnFailure => !success,
                 Restart::Always => true,
             };
         let restart =
-            wanted && !stopping && !aborted && !told_to_stop && (replacing || info.restarts < config.max_restarts);
+            wanted
+            && !stopping
+            && !aborted
+            && !told_to_stop
+            && (replacing || requested || info.restarts < config.max_restarts);
         if !restart {
             info.state = NodeState::Exited { success, detail: status.to_string() };
             let gave_up = wanted && !stopping && !aborted && !told_to_stop;
@@ -1055,6 +1090,10 @@ impl Session {
         info.state = NodeState::Starting;
         if replacing {
             s.log("daemon", format!("`{id}` exited for the update: {status}, starting its new binary"));
+            return Some(Duration::ZERO);
+        }
+        if requested {
+            s.log("daemon", format!("`{id}` exited on request: {status}, starting it again"));
             return Some(Duration::ZERO);
         }
         info.restarts += 1;

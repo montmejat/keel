@@ -25,8 +25,16 @@ pub const PROTOCOL_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
-    /// Which protocol and which keel this is. A client asks first.
-    Hello,
+    /// Which protocol and which keel this is. A client asks first. An agent
+    /// says so (`agent`), and its requests that act wait for a human: see
+    /// `Request::Approve`.
+    Hello {
+        #[serde(default)]
+        agent: bool,
+        /// Who is asking, for the record of actions.
+        #[serde(default)]
+        client: Option<String>,
+    },
     Status,
     /// Log lines numbered `since` and after, as far back as the daemon keeps.
     Logs {
@@ -45,6 +53,21 @@ pub enum Request {
     Update {
         deployment: Option<String>,
         binaries: BTreeMap<String, String>,
+    },
+    /// Kills a node so that it starts again, as its restart policy would after
+    /// a crash. A node that is `restart: never` is refused.
+    Restart {
+        node: String,
+    },
+    /// The actions agents asked for, waiting or decided, oldest first.
+    Actions,
+    /// Does what an agent asked for. Refused from an agent's connection.
+    Approve {
+        id: u64,
+    },
+    /// Drops what an agent asked for. Refused from an agent's connection.
+    Deny {
+        id: u64,
     },
     /// Turns the connection into a stream: after `subscribed`, the daemon
     /// sends an `event` every `interval_ms`, until the client hangs up. Such a
@@ -68,6 +91,14 @@ pub enum Reply {
     Hello(Hello),
     /// The connection is a stream now, sampled every `interval_ms`.
     Subscribed { interval_ms: u64 },
+    /// The node was killed and starts again.
+    Restarted(String),
+    /// An agent's request is waiting for a human: `Request::Actions` shows it
+    /// by this id.
+    Pending { id: u64 },
+    Actions(Vec<ActionRecord>),
+    /// The action was dropped.
+    Denied,
     Event(Event),
     Status(Status),
     Logs(Logs),
@@ -76,6 +107,37 @@ pub enum Reply {
     /// The nodes an update replaces.
     Updating(Vec<String>),
     Error(String),
+}
+
+/// What an agent asked for, and what became of it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionRecord {
+    pub id: u64,
+    /// In words, for the person deciding.
+    pub summary: String,
+    /// Who asked: the `client` it said hello with.
+    pub client: String,
+    pub state: ActionState,
+    /// What happened once approved.
+    pub outcome: Option<String>,
+    /// Milliseconds since this daemon began serving.
+    pub asked_ms: u64,
+    pub decided_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionState {
+    Pending,
+    Approved,
+    Denied,
+}
+
+/// What a node's restart answers with, from a machine that doesn't run it.
+pub const NO_SUCH_NODE: &str = "no node ";
+
+pub(crate) fn served_by_the_connection() -> Reply {
+    Reply::Error("this request is served by the connection, not the dataflow".into())
 }
 
 /// What a stream carries. Each sample sends the three, in this order.
@@ -275,30 +337,152 @@ pub struct Delivery {
     pub released: Option<u64>,
 }
 
+/// Requests that change something: from an agent, they wait for a human.
+fn acts(request: &Request) -> bool {
+    matches!(request, Request::Stop | Request::Update { .. } | Request::Restart { .. })
+}
+
+fn describe(request: &Request) -> String {
+    match request {
+        Request::Stop => "stop the dataflow".into(),
+        Request::Restart { node } => format!("restart node `{node}`"),
+        Request::Update { deployment, binaries } => format!(
+            "roll {} in, replacing {} node binaries",
+            deployment.as_deref().map_or("a new deployment".into(), |d| format!("deployment {d}")),
+            binaries.len()
+        ),
+        other => format!("{other:?}"),
+    }
+}
+
+/// The actions agents asked for, shared by a daemon's connections.
+struct Actions {
+    start: std::time::Instant,
+    /// Oldest first; each with the request it holds while it is pending.
+    list: std::sync::Mutex<(u64, Vec<(ActionRecord, Option<Request>)>)>,
+}
+
+/// How many decided actions are kept to show.
+const KEEP_DECIDED: usize = 100;
+
+impl Actions {
+    fn now_ms(&self) -> u64 {
+        self.start.elapsed().as_millis() as u64
+    }
+
+    fn ask(&self, request: Request, client: &str) -> u64 {
+        let mut list = self.list.lock().unwrap();
+        list.0 += 1;
+        let id = list.0;
+        let record = ActionRecord {
+            id,
+            summary: describe(&request),
+            client: client.to_owned(),
+            state: ActionState::Pending,
+            outcome: None,
+            asked_ms: self.now_ms(),
+            decided_ms: None,
+        };
+        eprintln!("[daemon] {client} asks to {} (action {id}): `keel approve {id}` or `keel deny {id}`", record.summary);
+        list.1.push((record, Some(request)));
+        let decided = list.1.iter().filter(|(r, _)| r.state != ActionState::Pending).count();
+        if decided > KEEP_DECIDED {
+            let oldest = list.1.iter().position(|(r, _)| r.state != ActionState::Pending).unwrap();
+            list.1.remove(oldest);
+        }
+        id
+    }
+
+    fn records(&self) -> Vec<ActionRecord> {
+        self.list.lock().unwrap().1.iter().map(|(r, _)| r.clone()).collect()
+    }
+
+    /// Takes the request of a pending action, deciding it. The caller says
+    /// what became of it with `finish`.
+    fn take(&self, id: u64, state: ActionState) -> Result<Request, String> {
+        let mut list = self.list.lock().unwrap();
+        let Some((record, request)) = list.1.iter_mut().find(|(r, _)| r.id == id) else {
+            return Err(format!("no action {id}"));
+        };
+        let Some(request) = request.take() else { return Err(format!("action {id} is already decided")) };
+        record.state = state;
+        record.decided_ms = Some(self.start.elapsed().as_millis() as u64);
+        Ok(request)
+    }
+
+    fn finish(&self, id: u64, outcome: String) {
+        if let Some((record, _)) = self.list.lock().unwrap().1.iter_mut().find(|(r, _)| r.id == id) {
+            record.outcome = Some(outcome);
+        }
+    }
+}
+
+fn outcome(reply: &Reply) -> String {
+    match reply {
+        Reply::Stopping => "stopping".into(),
+        Reply::Restarted(node) => format!("`{node}` was killed and starts again"),
+        Reply::Updating(nodes) => format!("replacing {}", nodes.join(", ")),
+        Reply::Error(e) => format!("failed: {e}"),
+        other => format!("{other:?}"),
+    }
+}
+
 /// Serves each connection on its own thread, answering with `handle`.
+///
+/// A connection that says it is an agent can look at everything, but what it
+/// asks that changes something waits as a pending action until a person
+/// approves it from another connection. Everything else goes straight to
+/// `handle`.
 pub(crate) fn serve(listener: UnixListener, handle: impl Fn(Request) -> Reply + Send + Sync + 'static) {
     let handle = Arc::new(handle);
+    let actions = Arc::new(Actions { start: std::time::Instant::now(), list: Default::default() });
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let handle = handle.clone();
+            let (handle, actions) = (handle.clone(), actions.clone());
             std::thread::spawn(move || {
-                let _ = serve_connection(stream, &*handle);
+                let _ = serve_connection(stream, &*handle, &actions);
             });
         }
     });
 }
 
-fn serve_connection(stream: UnixStream, handle: &dyn Fn(Request) -> Reply) -> io::Result<()> {
+fn serve_connection(stream: UnixStream, handle: &dyn Fn(Request) -> Reply, actions: &Actions) -> io::Result<()> {
     let mut writer = stream.try_clone()?;
+    let (mut agent, mut client) = (false, String::from("an agent"));
     for line in BufReader::new(stream).lines() {
         let reply = match serde_json::from_str(&line?) {
             Ok(Request::Subscribe { interval_ms }) => return stream_events(&mut writer, interval_ms, handle),
-            Ok(request) => handle(request),
+            Ok(request) => match request {
+                Request::Hello { agent: is_agent, client: who } => {
+                    (agent, client) = (is_agent, who.unwrap_or(client));
+                    handle(Request::Hello { agent: is_agent, client: None })
+                }
+                Request::Actions => Reply::Actions(actions.records()),
+                Request::Approve { .. } | Request::Deny { .. } if agent => {
+                    Reply::Error("an agent can't decide on actions, only ask for them".into())
+                }
+                Request::Approve { id } => match actions.take(id, ActionState::Approved) {
+                    Ok(request) => {
+                        let reply = handle(request);
+                        eprintln!("[daemon] action {id} approved: {}", outcome(&reply));
+                        actions.finish(id, outcome(&reply));
+                        reply
+                    }
+                    Err(e) => Reply::Error(e),
+                },
+                Request::Deny { id } => match actions.take(id, ActionState::Denied) {
+                    Ok(_) => {
+                        eprintln!("[daemon] action {id} denied");
+                        Reply::Denied
+                    }
+                    Err(e) => Reply::Error(e),
+                },
+                request if agent && acts(&request) => Reply::Pending { id: actions.ask(request, &client) },
+                request => handle(request),
+            },
             Err(e) => Reply::Error(format!("invalid request: {e}")),
         };
-        let mut out = serde_json::to_vec(&reply)?;
-        out.push(b'\n');
-        writer.write_all(&out)?;
+        send(&mut writer, &reply)?;
     }
     Ok(())
 }
@@ -341,11 +525,21 @@ pub struct Client {
 
 impl Client {
     pub fn connect(pid: u32) -> io::Result<Self> {
+        Self::connect_as(pid, false, None)
+    }
+
+    /// As an agent: what it asks that changes something waits for a person
+    /// to approve it (`keel approve`), and it can't approve anything itself.
+    pub fn connect_as_agent(pid: u32, client: &str) -> io::Result<Self> {
+        Self::connect_as(pid, true, Some(client.to_owned()))
+    }
+
+    fn connect_as(pid: u32, agent: bool, who: Option<String>) -> io::Result<Self> {
         let stream = UnixStream::connect(runtime::control_socket(pid))
             .map_err(|e| io::Error::new(e.kind(), format!("can't reach the daemon with pid {pid}: {e}")))?;
         let mut client = Self { reader: BufReader::new(stream.try_clone()?), writer: stream };
         // A daemon from before there was a `hello` answers with an error.
-        match client.request(&Request::Hello) {
+        match client.request(&Request::Hello { agent, client: who }) {
             Ok(Reply::Hello(Hello { protocol: PROTOCOL_VERSION, .. })) => Ok(client),
             Ok(Reply::Hello(hello)) => Err(io::Error::other(format!(
                 "the daemon with pid {pid} (keel {}) speaks control protocol {}, this tool {PROTOCOL_VERSION}",
@@ -418,6 +612,31 @@ impl Client {
         let interval_ms = interval.as_millis() as u64;
         match self.request(&Request::Subscribe { interval_ms })? {
             Reply::Subscribed { .. } => Ok(Subscription { reader: self.reader }),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Asks to kill a node so that it starts again. For an agent's connection
+    /// the answer is `Pending`: the id of the action a person has to approve.
+    pub fn restart(&mut self, node: &str) -> io::Result<Reply> {
+        self.request(&Request::Restart { node: node.to_owned() })
+    }
+
+    pub fn actions(&mut self) -> io::Result<Vec<ActionRecord>> {
+        match self.request(&Request::Actions)? {
+            Reply::Actions(actions) => Ok(actions),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Does what an agent asked for, and says what became of it.
+    pub fn approve(&mut self, id: u64) -> io::Result<Reply> {
+        self.request(&Request::Approve { id })
+    }
+
+    pub fn deny(&mut self, id: u64) -> io::Result<()> {
+        match self.request(&Request::Deny { id })? {
+            Reply::Denied => Ok(()),
             other => Err(unexpected(other)),
         }
     }
@@ -508,8 +727,10 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let lines = AtomicU64::new(0);
         serve(UnixListener::bind(&path).unwrap(), move |request| match request {
-            Request::Hello => hello(),
+            Request::Hello { .. } => hello(),
             Request::Status => Reply::Status(status()),
+            Request::Stop => Reply::Stopping,
+            Request::Restart { node } => Reply::Restarted(node),
             Request::Logs { since } => {
                 let next = lines.fetch_add(1, Ordering::SeqCst) + 1;
                 let line = LogLine { seq: since, t_ms: 0, node: "n".into(), text: format!("line {next}") };
@@ -567,6 +788,74 @@ mod tests {
         let mut line = String::new();
         BufReader::new(stream).read_line(&mut line).unwrap();
         assert!(matches!(serde_json::from_str(&line).unwrap(), Reply::Hello(Hello { protocol: PROTOCOL_VERSION, .. })));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// What a connection sends and gets back, line by line.
+    struct Talk(BufReader<UnixStream>, UnixStream);
+
+    impl Talk {
+        fn to(path: &PathBuf, hello: &str) -> Self {
+            let stream = connect(path);
+            let mut talk = Self(BufReader::new(stream.try_clone().unwrap()), stream);
+            talk.say(hello);
+            talk
+        }
+
+        fn say(&mut self, request: &str) -> Reply {
+            writeln!(self.1, "{request}").unwrap();
+            let mut line = String::new();
+            self.0.read_line(&mut line).unwrap();
+            serde_json::from_str(&line).unwrap()
+        }
+    }
+
+    #[test]
+    fn what_an_agent_asks_to_change_waits_for_a_person() {
+        let path = serve_stub("gate");
+        let mut agent = Talk::to(&path, r#"{"cmd":"hello","agent":true,"client":"test agent"}"#);
+        let mut person = Talk::to(&path, r#"{"cmd":"hello"}"#);
+
+        // Looking is free; asking to change is held.
+        assert!(matches!(agent.say(r#"{"cmd":"status"}"#), Reply::Status(_)));
+        let Reply::Pending { id } = agent.say(r#"{"cmd":"restart","node":"filter"}"#) else { panic!("held") };
+        let Reply::Actions(list) = person.say(r#"{"cmd":"actions"}"#) else { panic!() };
+        assert_eq!((list[0].state, list[0].client.as_str()), (ActionState::Pending, "test agent"));
+        assert_eq!(list[0].summary, "restart node `filter`");
+
+        // It can't decide for itself.
+        assert!(matches!(agent.say(&format!(r#"{{"cmd":"approve","id":{id}}}"#)), Reply::Error(_)));
+        // A person approving runs it, and the record says what happened.
+        let reply = person.say(&format!(r#"{{"cmd":"approve","id":{id}}}"#));
+        assert!(matches!(reply, Reply::Restarted(ref n) if n == "filter"));
+        let Reply::Actions(list) = agent.say(r#"{"cmd":"actions"}"#) else { panic!() };
+        assert_eq!(list[0].state, ActionState::Approved);
+        assert_eq!(list[0].outcome.as_deref(), Some("`filter` was killed and starts again"));
+        // Once only.
+        assert!(matches!(person.say(&format!(r#"{{"cmd":"approve","id":{id}}}"#)), Reply::Error(_)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_denied_action_never_runs() {
+        let path = serve_stub("deny");
+        let mut agent = Talk::to(&path, r#"{"cmd":"hello","agent":true}"#);
+        let mut person = Talk::to(&path, r#"{"cmd":"hello"}"#);
+        let Reply::Pending { id } = agent.say(r#"{"cmd":"stop"}"#) else { panic!("held") };
+        assert!(matches!(person.say(&format!(r#"{{"cmd":"deny","id":{id}}}"#)), Reply::Denied));
+        let Reply::Actions(list) = person.say(r#"{"cmd":"actions"}"#) else { panic!() };
+        assert_eq!((list[0].state, list[0].outcome.as_deref()), (ActionState::Denied, None));
+        assert!(matches!(person.say(&format!(r#"{{"cmd":"approve","id":{id}}}"#)), Reply::Error(_)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_person_acts_directly() {
+        let path = serve_stub("direct");
+        let mut person = Talk::to(&path, r#"{"cmd":"hello"}"#);
+        assert!(matches!(person.say(r#"{"cmd":"stop"}"#), Reply::Stopping));
+        let Reply::Actions(list) = person.say(r#"{"cmd":"actions"}"#) else { panic!() };
+        assert!(list.is_empty());
         let _ = std::fs::remove_file(&path);
     }
 }

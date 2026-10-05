@@ -279,8 +279,24 @@ impl Coordinator {
 
     fn handle(&self, request: Request) -> Reply {
         match request {
-            Request::Hello => control::hello(),
-            Request::Subscribe { .. } => Reply::Error("a subscription is served by the connection".into()),
+            Request::Hello { .. } => control::hello(),
+            Request::Subscribe { .. } | Request::Actions | Request::Approve { .. } | Request::Deny { .. } => {
+                control::served_by_the_connection()
+            }
+            // Whichever machine runs the node says so; the others say it isn't theirs.
+            Request::Restart { node } => {
+                let mut failure = Reply::Error(format!("{}`{node}`", control::NO_SUCH_NODE));
+                for (machine, reply) in self.ask_all(Request::Restart { node }) {
+                    match reply {
+                        Reply::Restarted(node) => return Reply::Restarted(node),
+                        Reply::Error(e) if !e.starts_with(control::NO_SUCH_NODE) => {
+                            failure = Reply::Error(format!("`{machine}`: {e}"))
+                        }
+                        _ => {}
+                    }
+                }
+                failure
+            }
             Request::Status => Reply::Status(self.status()),
             Request::Logs { since } => {
                 let logs = self.logs.lock().unwrap();
