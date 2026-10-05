@@ -279,6 +279,7 @@ impl Coordinator {
 
     fn handle(&self, request: Request) -> Reply {
         match request {
+            Request::Hello => control::hello(),
             Request::Status => Reply::Status(self.status()),
             Request::Logs { since } => {
                 let logs = self.logs.lock().unwrap();

@@ -17,9 +17,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::runtime;
 
+/// The version of this protocol, in `docs/protocol.md`. It goes up when a
+/// request or a reply changes in a way an older client would misread; a
+/// field added with a default doesn't count.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
+    /// Which protocol and which keel this is. A client asks first.
+    Hello,
     Status,
     /// Log lines numbered `since` and after, as far back as the daemon keeps.
     Logs {
@@ -44,6 +51,7 @@ pub enum Request {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reply {
+    Hello(Hello),
     Status(Status),
     Logs(Logs),
     Stopping,
@@ -51,6 +59,18 @@ pub enum Reply {
     /// The nodes an update replaces.
     Updating(Vec<String>),
     Error(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Hello {
+    pub protocol: u32,
+    /// The keel build, for a human reading an error.
+    pub keel: String,
+}
+
+/// What a daemon answers to `Request::Hello`.
+pub fn hello() -> Reply {
+    Reply::Hello(Hello { protocol: PROTOCOL_VERSION, keel: env!("CARGO_PKG_VERSION").to_owned() })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,7 +283,18 @@ impl Client {
     pub fn connect(pid: u32) -> io::Result<Self> {
         let stream = UnixStream::connect(runtime::control_socket(pid))
             .map_err(|e| io::Error::new(e.kind(), format!("can't reach the daemon with pid {pid}: {e}")))?;
-        Ok(Self { reader: BufReader::new(stream.try_clone()?), writer: stream })
+        let mut client = Self { reader: BufReader::new(stream.try_clone()?), writer: stream };
+        // A daemon from before there was a `hello` answers with an error.
+        match client.request(&Request::Hello) {
+            Ok(Reply::Hello(Hello { protocol: PROTOCOL_VERSION, .. })) => Ok(client),
+            Ok(Reply::Hello(hello)) => Err(io::Error::other(format!(
+                "the daemon with pid {pid} (keel {}) speaks control protocol {}, this tool {PROTOCOL_VERSION}",
+                hello.keel, hello.protocol
+            ))),
+            _ => Err(io::Error::other(format!(
+                "the daemon with pid {pid} is from an older keel and speaks control protocol 0, this tool {PROTOCOL_VERSION}"
+            ))),
+        }
     }
 
     pub fn request(&mut self, request: &Request) -> io::Result<Reply> {
@@ -331,4 +362,33 @@ impl Client {
 
 fn unexpected(reply: Reply) -> io::Error {
     io::Error::other(format!("unexpected reply from daemon: {reply:?}"))
+}
+
+/// The daemons running, each with its status. One may exit between being
+/// listed and being asked, and is left out.
+pub fn running() -> Vec<(u32, Status)> {
+    (runtime::running_daemons().into_iter())
+        .filter_map(|pid| Some((pid, Client::connect(pid).and_then(|mut c| c.status()).ok()?)))
+        .collect()
+}
+
+/// The daemon to talk to: `pid`, else the only one running, else the only
+/// coordinator (which sees every machine).
+pub fn pick(pid: Option<u32>) -> Result<u32, String> {
+    if let Some(pid) = pid {
+        return Ok(pid);
+    }
+    let all = running();
+    match &all[..] {
+        [] => Err("no dataflow or daemon is running".into()),
+        [(pid, _)] => Ok(*pid),
+        _ => {
+            let coordinators: Vec<u32> = all.iter().filter(|(_, s)| s.coordinator).map(|(p, _)| *p).collect();
+            if let [pid] = coordinators[..] {
+                return Ok(pid);
+            }
+            let pids: Vec<String> = all.iter().map(|(p, _)| p.to_string()).collect();
+            Err(format!("several dataflows are running ({}); pick one with --pid", pids.join(", ")))
+        }
+    }
 }

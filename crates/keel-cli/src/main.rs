@@ -14,9 +14,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use keel_daemon::control::{Client, LogLine, NodeState};
+use keel_daemon::control::{self, Client, LogLine, NodeState};
 use keel_daemon::packaging::{self, Registry};
-use keel_daemon::{runtime, wire};
+use keel_daemon::wire;
 
 #[derive(Parser)]
 #[command(name = "keel", version, about = "A minimal robotics-style middleware")]
@@ -297,30 +297,12 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
 /// The daemon to talk to: the given one, the only one running, or the only
 /// coordinator, which sees every machine.
 fn pick(pid: Option<u32>) -> Result<u32, String> {
-    if let Some(pid) = pid {
-        return Ok(pid);
-    }
-    match runtime::running_daemons()[..] {
-        [] => Err("no dataflow or daemon is running".into()),
-        [pid] => Ok(pid),
-        ref pids => {
-            let coordinators: Vec<u32> = (pids.iter().copied())
-                .filter(|&pid| Client::connect(pid).and_then(|mut c| c.status()).is_ok_and(|s| s.coordinator))
-                .collect();
-            if let [pid] = coordinators[..] {
-                return Ok(pid);
-            }
-            let pids: Vec<String> = pids.iter().map(u32::to_string).collect();
-            Err(format!("several dataflows are running ({}); pick one with --pid", pids.join(", ")))
-        }
-    }
+    control::pick(pid)
 }
 
 fn ps() -> Result<(), Box<dyn Error>> {
     println!("{:<8} {:>8} {:>6}  {:<9} {:<10} DATAFLOW", "PID", "UPTIME", "NODES", "STATE", "MACHINE");
-    for pid in runtime::running_daemons() {
-        // A daemon may exit between listing and connecting.
-        let Ok(status) = Client::connect(pid).and_then(|mut c| c.status()) else { continue };
+    for (pid, status) in control::running() {
         let running = status.nodes.iter().filter(|n| n.state == NodeState::Running).count();
         let state = match &status.dataflow {
             None => "idle",

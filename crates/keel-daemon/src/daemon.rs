@@ -94,6 +94,7 @@ pub fn serve(listen: &str) -> io::Result<()> {
 
 fn idle_reply(request: Request) -> Reply {
     match request {
+        Request::Hello => control::hello(),
         Request::Status => Reply::Status(Status {
             pid: std::process::id(),
             machine: None,
