@@ -420,7 +420,8 @@ impl Actions {
     }
 }
 
-fn outcome(reply: &Reply) -> String {
+/// What a reply to an acting request means, in words.
+pub fn outcome(reply: &Reply) -> String {
     match reply {
         Reply::Stopping => "stopping".into(),
         Reply::Restarted(node) => format!("`{node}` was killed and starts again"),
@@ -457,7 +458,9 @@ fn serve_connection(stream: UnixStream, handle: &dyn Fn(Request) -> Reply, actio
             Ok(Request::Subscribe { interval_ms }) => return stream_events(&mut writer, interval_ms, handle),
             Ok(request) => match request {
                 Request::Hello { agent: is_agent, client: who } => {
-                    (agent, client) = (is_agent, who.unwrap_or(client));
+                    // Once an agent, always: saying hello again can't take it back.
+                    agent |= is_agent;
+                    client = who.unwrap_or(client);
                     handle(Request::Hello { agent: is_agent, client: None })
                 }
                 Request::Actions => Reply::Actions(actions.records()),
@@ -676,11 +679,58 @@ impl Subscription {
     }
 }
 
-/// The daemons running, each with its status. One may exit between being
-/// listed and being asked, and is left out.
-pub fn running() -> Vec<(u32, Status)> {
+/// The daemons running, each with its status, or why it couldn't be had: a
+/// daemon from another keel, which speaks another protocol, is listed with
+/// that. One that exits between being listed and being asked is left out.
+pub fn running() -> Vec<(u32, Result<Status, String>)> {
     (runtime::running_daemons().into_iter())
-        .filter_map(|pid| Some((pid, Client::connect(pid).and_then(|mut c| c.status()).ok()?)))
+        .filter_map(|pid| match Client::connect(pid).and_then(|mut c| c.status()) {
+            Ok(status) => Some((pid, Ok(status))),
+            Err(_) if !runtime::control_socket(pid).exists() => None,
+            Err(e) => Some((pid, Err(e.to_string()))),
+        })
+        .collect()
+}
+
+/// A running daemon in a line, for a list to choose from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Summary {
+    pub pid: u32,
+    /// Why nothing more is known, e.g. a daemon from another keel.
+    pub error: Option<String>,
+    pub dataflow: Option<PathBuf>,
+    pub uptime_ms: u64,
+    pub nodes: usize,
+    pub nodes_running: usize,
+    pub machine: Option<String>,
+    pub coordinator: bool,
+}
+
+/// Every running daemon, summed up.
+pub fn summaries() -> Vec<Summary> {
+    (running().into_iter())
+        .map(|(pid, status)| match status {
+            Ok(s) => Summary {
+                pid,
+                error: None,
+                nodes_running: s.nodes.iter().filter(|n| n.state == NodeState::Running).count(),
+                nodes: s.nodes.len(),
+                dataflow: s.dataflow,
+                uptime_ms: s.uptime_ms,
+                machine: s.machine,
+                coordinator: s.coordinator,
+            },
+            Err(e) => Summary {
+                pid,
+                error: Some(e),
+                dataflow: None,
+                uptime_ms: 0,
+                nodes: 0,
+                nodes_running: 0,
+                machine: None,
+                coordinator: false,
+            },
+        })
         .collect()
 }
 
@@ -693,9 +743,11 @@ pub fn pick(pid: Option<u32>) -> Result<u32, String> {
     let all = running();
     match &all[..] {
         [] => Err("no dataflow or daemon is running".into()),
-        [(pid, _)] => Ok(*pid),
+        [(pid, Ok(_))] => Ok(*pid),
+        [(_, Err(e))] => Err(e.clone()),
         _ => {
-            let coordinators: Vec<u32> = all.iter().filter(|(_, s)| s.coordinator).map(|(p, _)| *p).collect();
+            let coordinators: Vec<u32> =
+                all.iter().filter(|(_, s)| s.as_ref().is_ok_and(|s| s.coordinator)).map(|(p, _)| *p).collect();
             if let [pid] = coordinators[..] {
                 return Ok(pid);
             }
@@ -836,6 +888,17 @@ mod tests {
         assert_eq!(list[0].outcome.as_deref(), Some("`filter` was killed and starts again"));
         // Once only.
         assert!(matches!(person.say(&format!(r#"{{"cmd":"approve","id":{id}}}"#)), Reply::Error(_)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_agent_stays_one() {
+        let path = serve_stub("sticky");
+        let mut agent = Talk::to(&path, r#"{"cmd":"hello","agent":true}"#);
+        // Saying hello again as a person doesn't make it one.
+        assert!(matches!(agent.say(r#"{"cmd":"hello","agent":false}"#), Reply::Hello(_)));
+        assert!(matches!(agent.say(r#"{"cmd":"stop"}"#), Reply::Pending { .. }));
+        assert!(matches!(agent.say(r#"{"cmd":"approve","id":1}"#), Reply::Error(_)));
         let _ = std::fs::remove_file(&path);
     }
 

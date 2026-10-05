@@ -285,8 +285,13 @@ impl Coordinator {
             }
             // Whichever machine runs the node says so; the others say it isn't theirs.
             Request::Restart { node } => {
-                let mut failure = Reply::Error(format!("{}`{node}`", control::NO_SUCH_NODE));
-                for (machine, reply) in self.ask_all(Request::Restart { node }) {
+                let machines = self.daemons.lock().unwrap().len();
+                let replies = self.ask_all(Request::Restart { node: node.clone() });
+                let mut failure = match machines - replies.len() {
+                    0 => Reply::Error(format!("{}`{node}`", control::NO_SUCH_NODE)),
+                    n => Reply::Error(format!("no machine that answered runs `{node}`; {n} didn't answer in time")),
+                };
+                for (machine, reply) in replies {
                     match reply {
                         Reply::Restarted(node) => return Reply::Restarted(node),
                         Reply::Error(e) if !e.starts_with(control::NO_SUCH_NODE) => {

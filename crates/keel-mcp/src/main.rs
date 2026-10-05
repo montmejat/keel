@@ -20,26 +20,34 @@ use keel_daemon::doctor;
 use serde_json::{json, Value};
 
 /// How long an acting tool waits for a person before telling the agent that it
-/// is still waiting.
-const WAIT_FOR_APPROVAL: Duration = Duration::from_secs(90);
+/// is still waiting, and to ask again with `check_action`. Short enough to
+/// stay inside an MCP client's patience for one call.
+const WAIT_FOR_APPROVAL: Duration = Duration::from_secs(25);
 
 /// A reply longer than this is cut: an agent's context is not free.
 const MAX_LOG_LINES: usize = 200;
 
 fn main() -> io::Result<()> {
-    let stdout = io::stdout();
+    let mut calls: Vec<std::thread::JoinHandle<()>> = Vec::new();
     for line in io::stdin().lock().lines() {
+        calls.retain(|c| !c.is_finished());
         let Ok(message) = serde_json::from_str::<Value>(&line?) else { continue };
         // A notification has no id and gets no answer.
         let Some(id) = message.get("id").cloned() else { continue };
-        let reply = match respond(message["method"].as_str().unwrap_or(""), &message["params"]) {
-            Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-            Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": e}}),
-        };
-        let mut out = stdout.lock();
-        writeln!(out, "{reply}")?;
-        out.flush()?;
+        // Each on its own thread: a tool waiting for a person mustn't keep
+        // the others, or a ping, from being answered. Replies may come out of
+        // order, which JSON-RPC allows: the id says which is which.
+        calls.push(std::thread::spawn(move || {
+            let reply = match respond(message["method"].as_str().unwrap_or(""), &message["params"]) {
+                Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": e}}),
+            };
+            let mut out = io::stdout().lock();
+            let _ = writeln!(out, "{reply}").and_then(|_| out.flush());
+        }));
     }
+    // The client is done asking; answer what it asked before going.
+    calls.into_iter().for_each(|c| drop(c.join()));
     Ok(())
 }
 
@@ -93,7 +101,7 @@ fn tools() -> Value {
         },
         {
             "name": "restart_node",
-            "description": "Kill a node so that it starts again, as its restart policy would after a crash. For a node that is stuck or stalled and has `restart` set in the dataflow. This changes the running system, so a person has to approve it first: the call waits for them (up to 90 s) and says what they decided.",
+            "description": "Kill a node so that it starts again, as its restart policy would after a crash. For a node that is stuck or stalled and has `restart` set in the dataflow. This changes the running system, so a person has to approve it first: the call waits for them (up to 25 s) and says what they decided, or gives the action's id to check again with `check_action`.",
             "inputSchema": {"type": "object", "required": ["node"], "properties": {
                 "pid": pid,
                 "node": {"type": "string", "description": "The node's id, from `status`."},
@@ -101,8 +109,16 @@ fn tools() -> Value {
         },
         {
             "name": "stop",
-            "description": "Stop the whole dataflow gracefully. A person has to approve it first: the call waits for them (up to 90 s) and says what they decided. Use it only when nothing smaller fixes the problem.",
+            "description": "Stop the whole dataflow gracefully. A person has to approve it first: the call waits for them (up to 25 s) and says what they decided, or gives the action's id to check again with `check_action`. Use it only when nothing smaller fixes the problem.",
             "inputSchema": {"type": "object", "properties": {"pid": pid}},
+        },
+        {
+            "name": "check_action",
+            "description": "What became of something you asked for that was still waiting for a person: waits up to 25 s more for their decision.",
+            "inputSchema": {"type": "object", "required": ["id"], "properties": {
+                "pid": pid,
+                "id": {"type": "integer", "description": "The action's id, as `restart_node` or `stop` gave it."},
+            }},
         },
         {
             "name": "doctor",
@@ -115,7 +131,7 @@ fn tools() -> Value {
 fn call(tool: &str, args: &Value) -> Result<String, String> {
     let json = |v: Value| serde_json::to_string_pretty(&v).map_err(|e| e.to_string());
     match tool {
-        "dataflows" => json(dataflows()),
+        "dataflows" => json(serde_json::to_value(control::summaries()).map_err(|e| e.to_string())?),
         "status" => {
             let status = client(args)?.status().map_err(|e| e.to_string())?;
             let nodes: Vec<Value> = (status.nodes.iter())
@@ -169,6 +185,10 @@ fn call(tool: &str, args: &Value) -> Result<String, String> {
             let mut client = agent_client(args)?;
             ask(&mut client, |c| c.request(&control::Request::Stop))
         }
+        "check_action" => {
+            let id = args["id"].as_u64().ok_or("`id` is required")?;
+            wait_for(&mut agent_client(args)?, id)
+        }
         "doctor" => {
             let checks: Vec<Value> = (doctor::here().iter())
                 .map(|c| json!({"check": c.name, "level": format!("{:?}", c.level).to_lowercase(), "detail": c.detail}))
@@ -179,18 +199,6 @@ fn call(tool: &str, args: &Value) -> Result<String, String> {
     }
 }
 
-fn dataflows() -> Value {
-    let rows: Vec<Value> = (control::running().into_iter())
-        .map(|(pid, status)| {
-            let running = status.nodes.iter().filter(|n| n.state == NodeState::Running).count();
-            json!({"pid": pid, "uptime_ms": status.uptime_ms, "nodes_running": running,
-                   "nodes": status.nodes.len(), "machine": status.machine,
-                   "coordinator": status.coordinator, "dataflow": status.dataflow})
-        })
-        .collect();
-    json!(rows)
-}
-
 /// A connection that holds what it asks for until a person approves it.
 fn agent_client(args: &Value) -> Result<Client, String> {
     let pid = control::pick(args["pid"].as_u64().map(|p| p as u32)).map_err(|e| e.replace("--pid", "`pid`"))?;
@@ -199,23 +207,31 @@ fn agent_client(args: &Value) -> Result<Client, String> {
 
 /// Sends a request that changes something, and waits for a person's answer.
 fn ask(client: &mut Client, send: impl FnOnce(&mut Client) -> io::Result<Reply>) -> Result<String, String> {
-    let id = match send(client).map_err(|e| e.to_string())? {
-        Reply::Pending { id } => id,
-        other => return Ok(format!("done: {other:?}")),
-    };
+    match send(client).map_err(|e| e.to_string())? {
+        Reply::Pending { id } => wait_for(client, id),
+        other => Ok(format!("done: {}", control::outcome(&other))),
+    }
+}
+
+/// Waits for a person to decide on action `id`, for a while.
+fn wait_for(client: &mut Client, id: u64) -> Result<String, String> {
     let until = Instant::now() + WAIT_FOR_APPROVAL;
     while Instant::now() < until {
         let actions = client.actions().map_err(|e| e.to_string())?;
-        if let Some(action) = actions.iter().find(|a| a.id == id) {
-            match action.state {
-                ActionState::Pending => {}
-                ActionState::Denied => return Err(format!("A person denied it (action {id}). Don't try it again; say what you found instead.")),
-                ActionState::Approved => return Ok(format!("A person approved it, and: {}", action.outcome.as_deref().unwrap_or("done"))),
+        let Some(action) = actions.iter().find(|a| a.id == id) else {
+            return Err(format!("There is no action {id} on this dataflow."));
+        };
+        // Approved is said before the action runs, its outcome after: wait for both.
+        match (action.state, &action.outcome) {
+            (ActionState::Denied, _) => {
+                return Err(format!("A person denied it (action {id}). Don't try it again; say what you found instead."))
             }
+            (ActionState::Approved, Some(outcome)) => return Ok(format!("A person approved it, and: {outcome}")),
+            _ => {}
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    Ok(format!("Still waiting for a person (action {id}). They can run `keel approve {id}`. Tell them what you want and why, and check `status` later."))
+    Ok(format!("Still waiting for a person (action {id}). They can approve it with `keel approve {id}` or in `keel web`. Call `check_action` with id {id} to keep waiting, or tell them what you want and why."))
 }
 
 /// The daemon to ask: the `pid` argument, else the only one running.

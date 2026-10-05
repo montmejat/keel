@@ -354,6 +354,13 @@ fn pick(pid: Option<u32>) -> Result<u32, String> {
 fn ps() -> Result<(), Box<dyn Error>> {
     println!("{:<8} {:>8} {:>6}  {:<9} {:<10} DATAFLOW", "PID", "UPTIME", "NODES", "STATE", "MACHINE");
     for (pid, status) in control::running() {
+        let status = match status {
+            Ok(status) => status,
+            Err(e) => {
+                println!("{:<8} {:>8} {:>6}  {:<9} {:<10} {e}", pid, "-", "-", "unknown", "-");
+                continue;
+            }
+        };
         let running = status.nodes.iter().filter(|n| n.state == NodeState::Running).count();
         let state = match &status.dataflow {
             None => "idle",
@@ -569,7 +576,7 @@ fn history(name: Option<&str>) -> Result<(), Box<dyn Error>> {
 fn approve(pid: u32, id: Option<u64>) -> Result<(), Box<dyn Error>> {
     let mut client = Client::connect(pid)?;
     if let Some(id) = id {
-        println!("approved {id}: {:?}", client.approve(id)?);
+        println!("approved {id}: {}", control::outcome(&client.approve(id)?));
         return Ok(());
     }
     let actions = client.actions()?;

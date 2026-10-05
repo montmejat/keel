@@ -22,7 +22,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 
-use keel_daemon::control::{self, Client, NodeState, Reply};
+use keel_daemon::control::{self, Client, Reply};
 use serde_json::{json, Value};
 
 const PAGE: &str = include_str!("index.html");
@@ -188,7 +188,7 @@ fn serve(mut stream: TcpStream, server: &Server) -> io::Result<()> {
     let arg = |name: &str| request.query.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
     let outcome = match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/api/events") => return events(&mut stream, server),
-        ("GET", "/api/dataflows") => Ok(dataflows()),
+        ("GET", "/api/dataflows") => Ok(serde_json::to_value(control::summaries())?),
         ("GET", "/api/actions") => actions(server),
         ("POST", "/api/approve") => decide(server, arg("id"), true),
         ("POST", "/api/deny") => decide(server, arg("id"), false),
@@ -206,13 +206,7 @@ fn serve(mut stream: TcpStream, server: &Server) -> io::Result<()> {
 }
 
 fn outcome(reply: &Reply) -> Value {
-    let text = match reply {
-        Reply::Stopping => "stopping".to_owned(),
-        Reply::Restarted(node) => format!("`{node}` was killed and starts again"),
-        Reply::Updating(nodes) => format!("replacing {}", nodes.join(", ")),
-        other => format!("{other:?}"),
-    };
-    json!({"outcome": text})
+    json!({"outcome": control::outcome(reply)})
 }
 
 fn with_client(server: &Server, f: impl FnOnce(&mut Client) -> io::Result<Value>) -> io::Result<Value> {
@@ -230,18 +224,6 @@ fn decide(server: &Server, id: Option<&str>, approve: bool) -> io::Result<Value>
         true => c.approve(id).map(|r| outcome(&r)),
         false => c.deny(id).map(|_| json!({"outcome": "denied"})),
     })
-}
-
-fn dataflows() -> Value {
-    let rows: Vec<Value> = (control::running().into_iter())
-        .map(|(pid, status)| {
-            let running = status.nodes.iter().filter(|n| n.state == NodeState::Running).count();
-            json!({"pid": pid, "uptime_ms": status.uptime_ms, "nodes_running": running,
-                   "nodes": status.nodes.len(), "machine": status.machine,
-                   "coordinator": status.coordinator, "dataflow": status.dataflow})
-        })
-        .collect();
-    json!(rows)
 }
 
 /// The control API's stream, as server-sent events: until the daemon is gone
