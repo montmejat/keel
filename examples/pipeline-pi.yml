@@ -1,0 +1,22 @@
+# The camera pipeline across the laptop and a Raspberry Pi. keel builds each
+# node for its machine and ships it: nothing needs copying by hand.
+machines:
+  robot: raspberrypi.local:7400   # the Pi, provisioned
+  base: 192.168.178.32:7402    # this laptop
+
+nodes:
+  - id: camera
+    machine: robot
+    build: camera
+
+  - id: detector
+    machine: base
+    build: detector
+    inputs:
+      frames: camera/frames
+
+  - id: recorder
+    machine: robot
+    build: recorder
+    inputs:
+      brightness: detector/brightness

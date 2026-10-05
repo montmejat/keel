@@ -52,3 +52,16 @@ layer, not the MCP server: a different agent client gets the same rule by
 saying hello as an agent. A new `restart` request, which kills a node for its
 restart policy to bring back, is what an agent can do that is smaller than
 stopping everything.
+
+## What the scenarios showed
+- Every scenario passed on its latest run with Sonnet: three diagnoses, and
+  `stall-once`, where the agent also asked for a restart, waited for the
+  approval, and checked that data flowed again. One run each.
+- **A leak, found and closed.** `status` includes the dataflow's file name,
+  and the first scenarios were named for their faults: in one run the agent
+  said the name "suggests" a deliberate stall. `run.sh` now runs each from a
+  copy called `robot.yml`. The earlier passes didn't depend on it, but they
+  could have.
+- **A thing the agent noticed that is true:** a restart on request doesn't
+  count in a node's `restarts`, by design (it didn't fail). It is also a
+  reason to show requested restarts somewhere a reader of `status` can see.

@@ -1,0 +1,19 @@
+# A scenario for an agent to fix: a filter that stalls once, and works again
+# when it is restarted. `examples/agent/run.sh stall-once` runs it, with the
+# agent allowed to ask for a restart, and checks that data flows again.
+# Build with `cargo build --release` first.
+nodes:
+  - id: sensor
+    path: ../target/release/sensor
+
+  - id: filter
+    path: ../target/release/filter
+    args: ["--fault", "stall", "--after", "400", "--once", "/tmp/keel-agent-stall-once"]
+    restart: on-failure
+    inputs:
+      reading: { source: sensor/reading, keep: latest }
+
+  - id: sink
+    path: ../target/release/sink
+    inputs:
+      filtered: filter/filtered
