@@ -689,6 +689,7 @@ dependencies = [
  "keel",
  "keel-daemon",
  "keel-record",
+ "keel-web",
  "ratatui",
  "serde_json",
 ]
@@ -742,6 +743,14 @@ dependencies = [
  "keel-control",
  "keel-micro",
  "libc",
+]
+
+[[package]]
+name = "keel-web"
+version = "0.1.0"
+dependencies = [
+ "keel-daemon",
+ "serde_json",
 ]
 
 [[package]]

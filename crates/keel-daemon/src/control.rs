@@ -355,11 +355,14 @@ fn describe(request: &Request) -> String {
     }
 }
 
+/// An action's record, and the request it holds while it is pending.
+type Action = (ActionRecord, Option<Request>);
+
 /// The actions agents asked for, shared by a daemon's connections.
 struct Actions {
     start: std::time::Instant,
-    /// Oldest first; each with the request it holds while it is pending.
-    list: std::sync::Mutex<(u64, Vec<(ActionRecord, Option<Request>)>)>,
+    /// Oldest first.
+    list: std::sync::Mutex<(u64, Vec<Action>)>,
 }
 
 /// How many decided actions are kept to show.
