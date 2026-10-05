@@ -1,7 +1,7 @@
 <h1 align="center">keel</h1>
 
 <p align="center">
-  <b>A whole robotics middleware stack in about 9,000 lines of Rust.</b><br>
+  <b>A whole robotics middleware stack in about 10,000 lines of Rust.</b><br>
   Zero-copy transport, real time, control, deployment, tracing and recording, built on what Linux already ships.
 </p>
 
