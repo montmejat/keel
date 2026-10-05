@@ -112,5 +112,6 @@ Written down so the protocol grows in one direction. None of it exists.
   on the deployment store of the machine you type them on, not through the
   control API, so an agent can't roll back yet.
 - **A record that outlives the daemon.** Actions are kept in memory.
-- **Over the network.** The socket is local. A gateway for a browser would
-  speak the same messages over HTTP and WebSocket.
+- **Over the network.** The socket is local. `keel web` is a gateway for a
+  browser on the same machine ([web](web.md)); one across machines would
+  need accounts and TLS.

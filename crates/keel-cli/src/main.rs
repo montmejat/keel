@@ -157,6 +157,18 @@ enum Command {
         #[arg(long)]
         pid: Option<u32>,
     },
+    /// Serve a page in the browser: the graph, latency, logs, and what an
+    /// agent asks to do. Open the URL it prints: it holds the token
+    Web {
+        /// Address to listen on. Anyone who can reach it and has the token
+        /// can act on the dataflow: keep it on this machine
+        #[arg(long, default_value = keel_web::DEFAULT_LISTEN)]
+        listen: String,
+        /// Daemon to show; by default the one running, asked again at each
+        /// connection
+        #[arg(long)]
+        pid: Option<u32>,
+    },
     /// Stop a running dataflow gracefully
     Stop {
         #[arg(long)]
@@ -311,6 +323,7 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
         Command::Daemon { listen } => keel_daemon::serve(&listen)?,
         Command::Ps => ps()?,
         Command::Top { pid } => top::run(pick(pid)?)?,
+        Command::Web { listen, pid } => keel_web::run(&listen, pid)?,
         Command::Restart { node, pid } => {
             Client::connect(pick(pid)?)?.restart(&node)?;
             println!("restarting {node}");

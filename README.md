@@ -70,6 +70,7 @@ two machines, a fleet, a flight recorder, the benchmarks.
 | [architecture](docs/architecture.md) | the design, the milestones, the benchmarks |
 | [dataflow](docs/dataflow.md) | the dataflow file, field by field, and the lifecycle |
 | [protocol](docs/protocol.md) | the control protocol tools use to look at and act on a daemon |
+| [web](docs/web.md) | `keel web`: the graph, logs and an agent's requests in a browser |
 | [machines](docs/machines.md) | provisioning, images, dataflows across machines, `keel doctor` |
 | [deployment](docs/deployment.md) | builds, history, rollback, branches, fleets |
 | [observability](docs/observability.md) | `keel top`, traces, recording, replay, the flight recorder |
@@ -88,6 +89,7 @@ crates/keel-control  control above the node API: joint messages, cycles, a PID,
 crates/keel-micro    a node on a microcontroller: no_std, no allocation
 crates/keel-serial   the node standing in for that chip on a serial port
 crates/keel-mcp      an MCP server over the control API, for an agent to look at a dataflow
+crates/keel-web      `keel web`: a page in the browser over the control API
 examples/            dataflows and their nodes, benchmarks, containers, images
 ```
 

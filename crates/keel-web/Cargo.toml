@@ -1,0 +1,10 @@
+[package]
+name = "keel-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A web page over the control API: the graph, latency, logs, and what an agent asks to do"
+
+[dependencies]
+keel-daemon = { path = "../keel-daemon" }
+serde_json = "1"

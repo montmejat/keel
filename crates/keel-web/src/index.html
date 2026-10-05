@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>keel</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #151515; --muted: #6e6e6a; --line: #e8e8e5; --surface: #f2f2ef; --card: #fff;
+    --accent: #0b4f7a; --ok: #2a9d5c; --warn: #c98a12; --bad: #cf3a3a; --idle: #a3a39d;
+    --shadow: 0 1px 2px rgb(0 0 0 / .04), 0 8px 24px rgb(0 0 0 / .05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d0d0e; --fg: #f1f1ef; --muted: #8f8f8a; --line: #242426; --surface: #151517; --card: #121214;
+      --accent: #7cc0ea; --ok: #45c07d; --warn: #e0a93a; --bad: #ef6b6b; --idle: #5c5c58;
+      --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 8px 24px rgb(0 0 0 / .4);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, .mono { font: 0.88em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+
+  header { display: flex; align-items: center; gap: 16px; padding: 18px 28px; border-bottom: 1px solid var(--line); }
+  .brand { font-weight: 650; letter-spacing: -0.02em; font-size: 1.1rem; }
+  .flow { color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spacer { flex: 1; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--idle); display: inline-block; flex: none; }
+  .dot.running, .dot.live { background: var(--ok); }
+  .dot.starting, .dot.stopping { background: var(--warn); }
+  .dot.failed { background: var(--bad); }
+  .btn { padding: 5px 13px; border-radius: 999px; border: 1px solid var(--line); background: transparent; font-size: 0.85rem; }
+  .btn:hover { border-color: var(--muted); }
+  .btn.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .btn.danger:hover { border-color: var(--bad); color: var(--bad); }
+
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 20px; padding: 24px 28px 40px; align-items: start; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+  .card > h2 { margin: 0; padding: 14px 18px; font-size: 0.78rem; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+  .card > h2 .count { color: var(--accent); }
+  .col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+
+  /* the graph */
+  #graph { position: relative; overflow: auto; padding: 8px 18px 24px; }
+  #graph svg { position: absolute; left: 0; top: 0; pointer-events: none; }
+  .edge { fill: none; stroke: var(--idle); stroke-width: 1.5; }
+  .edge.stalled { stroke: var(--bad); stroke-dasharray: 4 4; }
+  .edge-label { font-size: 11px; fill: var(--muted); text-anchor: middle; }
+  .edge-label.stalled { fill: var(--bad); }
+  .node {
+    position: absolute; width: 176px; height: 84px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--surface); cursor: pointer; transition: border-color .15s;
+  }
+  .node:hover { border-color: var(--muted); }
+  .node.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .node .id { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .node .sub { color: var(--muted); font-size: 0.8rem; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .node .sub .bad { color: var(--bad); }
+  .node .sub .warn { color: var(--warn); }
+  .empty { padding: 36px 18px 40px; color: var(--muted); text-align: center; }
+  .empty code { background: var(--surface); padding: 2px 6px; border-radius: 4px; }
+  .selection { display: flex; align-items: center; gap: 10px; padding: 0 18px 16px; color: var(--muted); font-size: 0.88rem; }
+
+  /* what an agent asks */
+  .ask { padding: 14px 18px; border-top: 1px solid var(--line); }
+  .ask .who { color: var(--muted); font-size: 0.8rem; }
+  .ask .what { margin: 2px 0 10px; }
+  .ask .what code { background: var(--surface); padding: 1px 5px; border-radius: 4px; }
+  .ask .buttons { display: flex; gap: 8px; }
+  .ask.done { padding: 9px 18px; font-size: 0.85rem; color: var(--muted); }
+  .ask.done .tag { font-weight: 600; margin-right: 6px; }
+  .ask.done .tag.approved { color: var(--ok); }
+  .ask.done .tag.denied { color: var(--bad); }
+  .quiet { padding: 4px 18px 18px; color: var(--muted); font-size: 0.9rem; }
+  .flash { background: var(--surface); }
+
+  /* logs */
+  #logs { height: 340px; overflow: auto; padding: 4px 18px 14px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .line { display: grid; grid-template-columns: 62px 74px 1fr; gap: 8px; white-space: pre-wrap; word-break: break-word; }
+  .line .t, .line .n { color: var(--muted); }
+  .line .n { overflow: hidden; text-overflow: ellipsis; }
+  .line.daemon .n { color: var(--accent); }
+
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; padding: 16px; }
+    header { padding: 14px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">keel</span>
+  <span class="flow" id="flow"></span>
+  <span class="spacer"></span>
+  <span class="pill" id="uptime"></span>
+  <span class="pill"><span class="dot" id="conn"></span><span id="connText">connecting</span></span>
+  <button class="btn danger" id="stop" hidden>Stop dataflow</button>
+</header>
+
+<main>
+  <div class="col">
+    <section class="card">
+      <h2>Graph <span id="graphNote"></span></h2>
+      <div id="graph"></div>
+      <div class="selection" id="selection" hidden></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="card">
+      <h2>Needs you <span class="count" id="askCount"></span></h2>
+      <div id="asks"></div>
+    </section>
+
+    <section class="card">
+      <h2>Logs <span id="logFilter"></span></h2>
+      <div id="logs"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+  var token = decodeURIComponent(location.hash.slice(1));
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = function (s) {
+    return String(s).replace(/[&<>"']/g, function (c) { return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]; });
+  };
+
+  // ---- formatting
+  function ns(n) {
+    if (n < 1e3) return Math.round(n) + ' ns';
+    if (n < 1e6) return (n / 1e3 < 10 ? (n / 1e3).toFixed(1) : Math.round(n / 1e3)) + ' µs';
+    if (n < 1e9) return (n / 1e6 < 10 ? (n / 1e6).toFixed(1) : Math.round(n / 1e6)) + ' ms';
+    return (n / 1e9).toFixed(1) + ' s';
+  }
+  function dur(ms) {
+    var s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's';
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ' + (s % 60) + 's';
+    return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+  }
+  function rate(r) { return r >= 100 ? Math.round(r) + '/s' : r >= 10 ? r.toFixed(0) + '/s' : r.toFixed(1) + '/s'; }
+  function clock(ms) { return '+' + (ms / 1000).toFixed(1) + 's'; }
+
+  // ---- state
+  var status = null, latency = {}, history = {}, selected = null, lastStatusAt = 0;
+
+  // ---- connection
+  function setConn(kind, text) {
+    $('conn').className = 'dot ' + kind;
+    $('connText').textContent = text;
+  }
+
+  function connect() {
+    if (!token) {
+      setConn('failed', 'no token');
+      $('graph').innerHTML = '<div class="empty">Open the address <code>keel web</code> printed: it ends in the token.</div>';
+      return;
+    }
+    var es = new EventSource('/api/events?token=' + encodeURIComponent(token));
+    es.addEventListener('status', function (e) { onStatus(JSON.parse(e.data)); });
+    es.addEventListener('logs', function (e) { onLogs(JSON.parse(e.data)); });
+    es.addEventListener('latency', function (e) { onLatency(JSON.parse(e.data)); });
+    es.addEventListener('waiting', function () {
+      status = null;
+      setConn('starting', 'waiting for a dataflow');
+      render();
+    });
+    es.onerror = function () { setConn('failed', 'reconnecting'); };
+  }
+
+  function onStatus(s) {
+    status = s;
+    lastStatusAt = Date.now();
+    setConn('live', s.stopping ? 'stopping' : 'live');
+    // Message counts over the last second or so, not one sample: at 4 Hz a
+    // single delta is mostly noise.
+    s.links.forEach(function (l) {
+      var h = history[l.source] || (history[l.source] = []);
+      h.push([s.uptime_ms, l.messages]);
+      while (h.length > 8) h.shift();
+    });
+    render();
+  }
+
+  var logLines = [], nextSeq = 0;
+  function onLogs(l) {
+    l.lines.forEach(function (line) { if (line.seq >= nextSeq) { logLines.push(line); nextSeq = line.seq + 1; } });
+    if (logLines.length > 600) logLines = logLines.slice(-400);
+    renderLogs();
+  }
+
+  function onLatency(report) {
+    var by = {};
+    report.inputs.forEach(function (i) {
+      var n = by[i.node] || (by[i.node] = { proc99: 0, lat99: 0 });
+      n.proc99 = Math.max(n.proc99, i.processing.p99);
+      n.lat99 = Math.max(n.lat99, i.latency.p99);
+    });
+    latency = by;
+  }
+
+  // ---- graph
+  var NODE_W = 176, NODE_H = 84, GAP_X = 96, GAP_Y = 22, PAD = 22;
+
+  function linkRate(source) {
+    var h = history[source];
+    if (!h || h.length < 2) return null;
+    var last = h[h.length - 1], first = h[0];
+    for (var i = h.length - 2; i >= 0; i--) { first = h[i]; if (last[0] - h[i][0] >= 1000) break; }
+    var dt = (last[0] - first[0]) / 1000;
+    return dt > 0 ? (last[1] - first[1]) / dt : null;
+  }
+
+  function layout(s) {
+    var ids = s.nodes.map(function (n) { return n.id; });
+    var edges = [];
+    s.links.forEach(function (l) {
+      var from = l.source.split('/')[0];
+      l.targets.forEach(function (t) {
+        var to = t.split('/')[0];
+        if (ids.indexOf(to) >= 0 && ids.indexOf(from) >= 0) edges.push({ from: from, to: to, source: l.source });
+      });
+    });
+    var depth = {};
+    ids.forEach(function (id) { depth[id] = 0; });
+    for (var pass = 0; pass < ids.length; pass++) {
+      edges.forEach(function (e) { if (depth[e.to] < depth[e.from] + 1) depth[e.to] = depth[e.from] + 1; });
+    }
+    var cols = [];
+    ids.forEach(function (id) { (cols[depth[id]] = cols[depth[id]] || []).push(id); });
+    cols = cols.filter(Boolean);
+    var tallest = Math.max.apply(null, cols.map(function (c) { return c.length; }));
+    var pos = {};
+    cols.forEach(function (col, ci) {
+      var offset = (tallest - col.length) * (NODE_H + GAP_Y) / 2;
+      col.forEach(function (id, ri) {
+        pos[id] = { x: PAD + ci * (NODE_W + GAP_X), y: PAD + offset + ri * (NODE_H + GAP_Y) };
+      });
+    });
+    return {
+      pos: pos, edges: edges,
+      w: PAD * 2 + cols.length * NODE_W + (cols.length - 1) * GAP_X,
+      h: PAD * 2 + tallest * NODE_H + (tallest - 1) * GAP_Y,
+    };
+  }
+
+  function nodeState(n) {
+    var st = n.state.state;
+    if (st === 'exited') return n.state.success ? 'idle' : 'failed';
+    return st;
+  }
+
+  function renderGraph() {
+    var g = $('graph');
+    if (!status) {
+      g.innerHTML = '<div class="empty">No dataflow is running.<br>Start one with <code>keel run examples/pipeline.yml</code> and this page picks it up.</div>';
+      $('graphNote').textContent = '';
+      return;
+    }
+    var L = layout(status);
+    var up = status.uptime_ms > 3000;
+    // A node that takes messages in and sends none out is stuck, whatever it
+    // says its state is.
+    var inRate = {}, outRate = {};
+    L.edges.forEach(function (e) {
+      var r = linkRate(e.source);
+      if (r === null) return;
+      inRate[e.to] = Math.max(inRate[e.to] || 0, r);
+      outRate[e.from] = Math.max(outRate[e.from] || 0, r);
+    });
+    var html = '<svg width="' + L.w + '" height="' + L.h + '">';
+    var seen = {};
+    L.edges.forEach(function (e) {
+      var a = L.pos[e.from], b = L.pos[e.to];
+      var x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2, x2 = b.x, y2 = b.y + NODE_H / 2;
+      var mid = (x1 + x2) / 2;
+      var r = linkRate(e.source);
+      var src = status.nodes.filter(function (n) { return n.id === e.from; })[0];
+      var stalled = up && r !== null && r < 0.05 && src && src.state.state === 'running';
+      html += '<path class="edge' + (stalled ? ' stalled' : '') + '" d="M' + x1 + ',' + y1 + ' C' + mid + ',' + y1 + ' ' + mid + ',' + y2 + ' ' + x2 + ',' + y2 + '"/>';
+      var key = e.from + '>' + e.to;
+      if (!seen[key] && r !== null) {
+        seen[key] = true;
+        html += '<text class="edge-label' + (stalled ? ' stalled' : '') + '" x="' + mid + '" y="' + ((y1 + y2) / 2 - 7) + '">' + (stalled ? 'stalled' : esc(rate(r))) + '</text>';
+      }
+    });
+    html += '</svg>';
+    status.nodes.forEach(function (n) {
+      var p = L.pos[n.id], st = nodeState(n), lat = latency[n.id];
+      var bits = [];
+      if (n.state.state === 'exited' && !n.state.success) bits.push('<span class="bad">' + esc(n.state.detail) + '</span>');
+      else if (n.restarts > 0) bits.push('<span class="warn">' + n.restarts + ' restart' + (n.restarts > 1 ? 's' : '') + '</span>');
+      var stuck = up && st === 'running' && inRate[n.id] >= 1 && outRate[n.id] !== undefined && outRate[n.id] < 0.05;
+      if (stuck) bits.push('<span class="bad">not sending</span>');
+      if (lat && lat.proc99 > 0) bits.push('p99 ' + esc(ns(lat.proc99)));
+      html += '<div class="node' + (selected === n.id ? ' selected' : '') + '" data-id="' + esc(n.id) + '" style="left:' + p.x + 'px;top:' + p.y + 'px">' +
+        '<div class="id"><span class="dot ' + (stuck ? 'starting' : st) + '"></span><span>' + esc(n.id) + '</span></div>' +
+        '<div class="sub">' + (n.program && n.program !== n.id ? esc(n.program) : '&nbsp;') + '</div>' +
+        '<div class="sub">' + (bits.join(' · ') || '&nbsp;') + '</div></div>';
+    });
+    g.style.height = (L.h + 32) + 'px';
+    g.innerHTML = html;
+    $('graphNote').textContent = '';
+  }
+
+  function renderSelection() {
+    var el = $('selection');
+    if (!selected || !status) { el.hidden = true; return; }
+    el.hidden = false;
+    el.innerHTML = 'Logs filtered to <b>' + esc(selected) + '</b> ' +
+      '<button class="btn" id="restartNode">Restart it</button> <button class="btn" id="clearSel">Show all</button>';
+    $('clearSel').onclick = function () { selected = null; render(); };
+    $('restartNode').onclick = function () {
+      if (confirm('Kill ' + selected + ' so that it starts again?')) post('/api/restart?node=' + encodeURIComponent(selected));
+    };
+  }
+
+  // ---- logs
+  function renderLogs() {
+    var box = $('logs');
+    var atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    var lines = logLines.filter(function (l) { return !selected || l.node === selected; }).slice(-300);
+    box.innerHTML = lines.map(function (l) {
+      return '<div class="line ' + (l.node === 'daemon' ? 'daemon' : '') + '"><span class="t">' + clock(l.t_ms) + '</span><span class="n">' + esc(l.node) + '</span><span>' + esc(l.text) + '</span></div>';
+    }).join('');
+    if (atBottom) box.scrollTop = box.scrollHeight;
+    $('logFilter').textContent = selected ? selected : '';
+  }
+
+  // ---- header
+  function renderHeader() {
+    $('flow').textContent = status && status.dataflow ? status.dataflow.split('/').pop() : '';
+    $('uptime').textContent = status ? 'up ' + dur(status.uptime_ms) : '';
+    $('stop').hidden = !status;
+  }
+
+  function render() { renderHeader(); renderGraph(); renderSelection(); renderLogs(); }
+
+  // ---- what an agent asks
+  var lastActions = '';
+  function renderAsks(actions) {
+    var key = JSON.stringify(actions);
+    if (key === lastActions) return;
+    lastActions = key;
+    var pending = actions.filter(function (a) { return a.state === 'pending'; });
+    var decided = actions.filter(function (a) { return a.state !== 'pending'; }).slice(-5).reverse();
+    $('askCount').textContent = pending.length ? pending.length + ' waiting' : '';
+    var html = '';
+    pending.forEach(function (a) {
+      html += '<div class="ask"><div class="who">' + esc(a.client) + ' · ' + clock(a.asked_ms) + '</div>' +
+        '<div class="what">wants to ' + esc(a.summary).replace(/`([^`]+)`/g, '<code>$1</code>') + '</div>' +
+        '<div class="buttons"><button class="btn primary" data-act="approve" data-id="' + a.id + '">Approve</button>' +
+        '<button class="btn" data-act="deny" data-id="' + a.id + '">Deny</button></div></div>';
+    });
+    if (!pending.length) html += '<div class="quiet">' + (actions.length ? 'Nothing is waiting.' : 'Nothing has been asked. An agent that wants to change something shows up here first.') + '</div>';
+    decided.forEach(function (a) {
+      html += '<div class="ask done"><span class="tag ' + a.state + '">' + a.state + '</span>' + esc(a.summary).replace(/`([^`]+)`/g, '<code>$1</code>') +
+        (a.outcome ? '<br>' + esc(a.outcome) : '') + '</div>';
+    });
+    $('asks').innerHTML = html;
+  }
+
+  function pollActions() {
+    if (!token) return;
+    fetch('/api/actions?token=' + encodeURIComponent(token)).then(function (r) { return r.json(); }).then(function (a) {
+      if (Array.isArray(a)) renderAsks(a);
+    }).catch(function () {});
+  }
+
+  function post(path) {
+    return fetch(path, { method: 'POST', headers: { 'X-Keel-Token': token } })
+      .then(function (r) { return r.json(); })
+      .then(function (r) { if (r.error) alert(r.error); pollActions(); return r; });
+  }
+
+  // ---- events
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-act]');
+    if (btn) { post('/api/' + btn.dataset.act + '?id=' + btn.dataset.id); return; }
+    var node = e.target.closest('.node');
+    if (node) { selected = selected === node.dataset.id ? null : node.dataset.id; render(); }
+  });
+  $('stop').onclick = function () { if (confirm('Stop the whole dataflow?')) post('/api/stop'); };
+
+  // A stream that has gone quiet is a daemon that has gone.
+  setInterval(function () {
+    if (status && Date.now() - lastStatusAt > 3000) { setConn('failed', 'no data'); }
+  }, 1000);
+
+  connect();
+  pollActions();
+  setInterval(pollActions, 1000);
+})();
+</script>
+</body>
+</html>
