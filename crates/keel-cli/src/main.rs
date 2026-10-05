@@ -129,6 +129,15 @@ enum Command {
         #[arg(long)]
         pid: Option<u32>,
     },
+    /// Print what a running dataflow reports, as it does, one JSON object per
+    /// line: its status, its new log lines, its latency
+    Events {
+        /// Milliseconds between samples
+        #[arg(long, default_value_t = 250)]
+        interval_ms: u64,
+        #[arg(long)]
+        pid: Option<u32>,
+    },
     /// Stop a running dataflow gracefully
     Stop {
         #[arg(long)]
@@ -283,6 +292,7 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn Error>> {
         Command::Daemon { listen } => keel_daemon::serve(&listen)?,
         Command::Ps => ps()?,
         Command::Top { pid } => top::run(pick(pid)?)?,
+        Command::Events { interval_ms, pid } => events(pick(pid)?, interval_ms)?,
         Command::Logs { node, follow, pid } => logs(pick(pid)?, node.as_deref(), follow)?,
         Command::Stop { pid } => {
             let pid = pick(pid)?;
@@ -512,6 +522,17 @@ fn history(name: Option<&str>) -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+fn events(pid: u32, interval_ms: u64) -> Result<(), Box<dyn Error>> {
+    let mut stream = Client::connect(pid)?.subscribe(Duration::from_millis(interval_ms))?;
+    loop {
+        match stream.next_event() {
+            Ok(event) => println!("{}", serde_json::to_string(&event)?),
+            // The dataflow ended.
+            Err(_) => return Ok(()),
+        }
+    }
 }
 
 fn logs(pid: u32, node: Option<&str>, follow: bool) -> Result<(), Box<dyn Error>> {

@@ -505,6 +505,7 @@ impl Session {
     pub fn handle(&self, request: Request) -> Reply {
         match request {
             Request::Hello => control::hello(),
+            Request::Subscribe { .. } => Reply::Error("a subscription is served by the connection".into()),
             Request::Status => Reply::Status(self.status()),
             Request::Logs { since } => {
                 let s = self.state.lock().unwrap();

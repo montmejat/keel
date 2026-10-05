@@ -28,10 +28,28 @@ reply's name. Any request may be answered with `{"error": "<text>"}`.
 | `status` | | `status` | The graph: nodes, links, uptime, deployment |
 | `logs` | `since` | `logs` | Lines numbered `since` and after, from the last 10 000 kept |
 | `trace` | `summary` (default false) | `trace` | Latency per input; unless `summary`, also the sampled traces |
+| `subscribe` | `interval_ms` (default 250, at least 50) | `subscribed`, then `event`s | Turns the connection into a stream, see below |
 | `stop` | | `stopping` | Stops the dataflow gracefully |
 | `update` | `deployment`, `binaries` | `updating` | Rolls a new deployment in: nodes whose binary changed restart, one at a time. Answers with the nodes it replaces |
 
-`status`, `logs` and `trace` only read. `stop` and `update` act.
+`status`, `logs`, `trace` and `subscribe` only read. `stop` and `update` act.
+
+## Streaming
+
+`{"cmd":"subscribe","interval_ms":250}` answers `{"subscribed":{"interval_ms":250}}`,
+then, every interval until the client hangs up, up to three events:
+
+```json
+{"event":{"status":{...}}}     the same as a `status` reply
+{"event":{"logs":{...}}}       the lines since the last event; not sent when there are none
+{"event":{"latency":{...}}}    the same as `trace` with `summary`
+```
+
+The connection takes no more requests once subscribed: open another for
+those. The daemon samples at the interval and sends what it finds, so an
+event is at most one interval late; it doesn't yet send on change. Counters
+move all the time, so a status would nearly always have changed anyway.
+`keel events` prints a stream as one JSON object per line.
 
 ## Starting a conversation
 
@@ -68,9 +86,8 @@ error that lists them. Every tool uses these two.
 
 Written down so the protocol grows in one direction. None of it exists.
 
-- **Streaming.** A `subscribe` request after which the daemon sends
-  `status` changes, log lines and latency as they happen, instead of the
-  client asking over and over. What a web UI and an agent both want.
+- **Streams driven by change.** Events sent when something happens (a node
+  exits, a line is logged), not sampled.
 - **Rollback and start as requests.** `keel rollback` and `keel start` act
   on the deployment store of the machine you type them on, not through the
   control API.

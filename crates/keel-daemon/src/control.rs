@@ -46,12 +46,29 @@ pub enum Request {
         deployment: Option<String>,
         binaries: BTreeMap<String, String>,
     },
+    /// Turns the connection into a stream: after `subscribed`, the daemon
+    /// sends an `event` every `interval_ms`, until the client hangs up. Such a
+    /// connection takes no more requests.
+    Subscribe {
+        #[serde(default = "default_interval_ms")]
+        interval_ms: u64,
+    },
 }
+
+fn default_interval_ms() -> u64 {
+    250
+}
+
+/// The fastest a stream is sampled.
+const MIN_INTERVAL_MS: u64 = 50;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reply {
     Hello(Hello),
+    /// The connection is a stream now, sampled every `interval_ms`.
+    Subscribed { interval_ms: u64 },
+    Event(Event),
     Status(Status),
     Logs(Logs),
     Stopping,
@@ -59,6 +76,18 @@ pub enum Reply {
     /// The nodes an update replaces.
     Updating(Vec<String>),
     Error(String),
+}
+
+/// What a stream carries. Each sample sends the three, in this order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Event {
+    Status(Status),
+    /// The lines since the last event: none, most of the time. Not sent when
+    /// there are none.
+    Logs(Logs),
+    /// Latency per input, without the spans.
+    Latency(TraceReport),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +292,7 @@ fn serve_connection(stream: UnixStream, handle: &dyn Fn(Request) -> Reply) -> io
     let mut writer = stream.try_clone()?;
     for line in BufReader::new(stream).lines() {
         let reply = match serde_json::from_str(&line?) {
+            Ok(Request::Subscribe { interval_ms }) => return stream_events(&mut writer, interval_ms, handle),
             Ok(request) => handle(request),
             Err(e) => Reply::Error(format!("invalid request: {e}")),
         };
@@ -271,6 +301,36 @@ fn serve_connection(stream: UnixStream, handle: &dyn Fn(Request) -> Reply) -> io
         writer.write_all(&out)?;
     }
     Ok(())
+}
+
+fn send(writer: &mut UnixStream, reply: &Reply) -> io::Result<()> {
+    let mut out = serde_json::to_vec(reply)?;
+    out.push(b'\n');
+    writer.write_all(&out)
+}
+
+/// Samples `handle` every `interval_ms` and sends what it answers, until the
+/// client is gone or the daemon stops answering. It is the same questions a
+/// client would ask, asked here, so the daemon, a session and a coordinator
+/// all stream without knowing it.
+fn stream_events(writer: &mut UnixStream, interval_ms: u64, handle: &dyn Fn(Request) -> Reply) -> io::Result<()> {
+    let interval_ms = interval_ms.max(MIN_INTERVAL_MS);
+    send(writer, &Reply::Subscribed { interval_ms })?;
+    let mut since = 0;
+    loop {
+        let (Reply::Status(status), Reply::Logs(logs), Reply::Trace(latency)) =
+            (handle(Request::Status), handle(Request::Logs { since }), handle(Request::Trace { summary: true }))
+        else {
+            return Ok(());
+        };
+        since = logs.next;
+        send(writer, &Reply::Event(Event::Status(status)))?;
+        if !logs.lines.is_empty() {
+            send(writer, &Reply::Event(Event::Logs(logs)))?;
+        }
+        send(writer, &Reply::Event(Event::Latency(latency)))?;
+        std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+    }
 }
 
 /// A connection to a daemon's control API.
@@ -352,6 +412,16 @@ impl Client {
         }
     }
 
+    /// Turns this connection into a stream of events, sampled every
+    /// `interval`.
+    pub fn subscribe(mut self, interval: std::time::Duration) -> io::Result<Subscription> {
+        let interval_ms = interval.as_millis() as u64;
+        match self.request(&Request::Subscribe { interval_ms })? {
+            Reply::Subscribed { .. } => Ok(Subscription { reader: self.reader }),
+            other => Err(unexpected(other)),
+        }
+    }
+
     pub fn stop(&mut self) -> io::Result<()> {
         match self.request(&Request::Stop)? {
             Reply::Stopping => Ok(()),
@@ -362,6 +432,26 @@ impl Client {
 
 fn unexpected(reply: Reply) -> io::Error {
     io::Error::other(format!("unexpected reply from daemon: {reply:?}"))
+}
+
+/// The events of a subscribed connection, in order.
+pub struct Subscription {
+    reader: BufReader<UnixStream>,
+}
+
+impl Subscription {
+    /// Waits for the next event. An error when the daemon is gone.
+    pub fn next_event(&mut self) -> io::Result<Event> {
+        let mut line = String::new();
+        if self.reader.read_line(&mut line)? == 0 {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "the daemon closed the connection"));
+        }
+        match serde_json::from_str(&line)? {
+            Reply::Event(event) => Ok(event),
+            Reply::Error(e) => Err(io::Error::other(e)),
+            other => Err(unexpected(other)),
+        }
+    }
 }
 
 /// The daemons running, each with its status. One may exit between being
@@ -390,5 +480,93 @@ pub fn pick(pid: Option<u32>) -> Result<u32, String> {
             let pids: Vec<String> = all.iter().map(|(p, _)| p.to_string()).collect();
             Err(format!("several dataflows are running ({}); pick one with --pid", pids.join(", ")))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use super::*;
+
+    fn status() -> Status {
+        Status {
+            pid: 1,
+            machine: None,
+            dataflow: None,
+            uptime_ms: 0,
+            stopping: false,
+            nodes: Vec::new(),
+            links: Vec::new(),
+            coordinator: false,
+            deployment: None,
+        }
+    }
+
+    /// A daemon that has a log line to give each time it is asked.
+    fn serve_stub(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("keel-control-test-{}-{name}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let lines = AtomicU64::new(0);
+        serve(UnixListener::bind(&path).unwrap(), move |request| match request {
+            Request::Hello => hello(),
+            Request::Status => Reply::Status(status()),
+            Request::Logs { since } => {
+                let next = lines.fetch_add(1, Ordering::SeqCst) + 1;
+                let line = LogLine { seq: since, t_ms: 0, node: "n".into(), text: format!("line {next}") };
+                Reply::Logs(Logs { lines: vec![line], next: since + 1 })
+            }
+            Request::Trace { .. } => Reply::Trace(TraceReport::default()),
+            _ => Reply::Error("not in this test".into()),
+        });
+        path
+    }
+
+    fn connect(path: &PathBuf) -> UnixStream {
+        UnixStream::connect(path).unwrap()
+    }
+
+    #[test]
+    fn a_subscription_streams_status_logs_and_latency_in_turn() {
+        let path = serve_stub("stream");
+        let mut stream = connect(&path);
+        stream.write_all(b"{\"cmd\":\"subscribe\",\"interval_ms\":50}\n").unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut next = || {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            serde_json::from_str::<Reply>(&line).unwrap()
+        };
+        assert!(matches!(next(), Reply::Subscribed { interval_ms: 50 }));
+        // Two samples: each is a status, the new lines, the latency.
+        for expected in [1, 2] {
+            assert!(matches!(next(), Reply::Event(Event::Status(_))));
+            let Reply::Event(Event::Logs(logs)) = next() else { panic!("expected logs") };
+            assert_eq!(logs.next, expected, "each sample asks for the lines after the last one it sent");
+            assert!(matches!(next(), Reply::Event(Event::Latency(_))));
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_stream_is_never_faster_than_the_minimum() {
+        let path = serve_stub("min");
+        let mut stream = connect(&path);
+        stream.write_all(b"{\"cmd\":\"subscribe\",\"interval_ms\":1}\n").unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        let Reply::Subscribed { interval_ms } = serde_json::from_str(&line).unwrap() else { panic!() };
+        assert_eq!(interval_ms, MIN_INTERVAL_MS);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hello_names_the_protocol() {
+        let path = serve_stub("hello");
+        let mut stream = connect(&path);
+        stream.write_all(b"{\"cmd\":\"hello\"}\n").unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        assert!(matches!(serde_json::from_str(&line).unwrap(), Reply::Hello(Hello { protocol: PROTOCOL_VERSION, .. })));
+        let _ = std::fs::remove_file(&path);
     }
 }
