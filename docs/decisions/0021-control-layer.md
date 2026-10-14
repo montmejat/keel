@@ -1,6 +1,7 @@
 # 0021: Control is a layer above keel, and hardware is a node
 
-**Status:** Accepted, 2026-10-01
+**Status:** Accepted, 2026-10-01; its drivers share a loop per kind of
+device since [0031](0031-devices-and-simulation.md)
 
 ## Context
 keel moves bytes between processes and looks after them. What a robot does

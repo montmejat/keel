@@ -33,3 +33,7 @@ the layer uses, take the crate.
 - `serde_yaml` is deprecated upstream. Replace it (e.g. `serde_yml`, or TOML)
   before it causes trouble.
 - Each new dependency is noted here, in this file's Consequences.
+- `keel-control` uses `serde` for the settings in robot files, and
+  `keel-mujoco` `serde_yaml` to read them ([0031](0031-devices-and-simulation.md)).
+  `keel-mujoco` also links MuJoCo, a C library outside Cargo, when it's
+  there: an optional node, as [0016](0016-packaging-and-deployment.md) wants.

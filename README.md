@@ -41,7 +41,8 @@ in [docs/architecture.md](docs/architecture.md), and every decision has a
 | Provisioning | install over SSH, or a machine that is only keel; is it fit for a robot? | `keel provision` · `keel image` · `keel doctor` | [machines](docs/machines.md) |
 | Deployment | builds named by hash, history, branches, fleets | `keel deploy` · `keel rollback` · `keel branch` · `keel fleet` | [deployment](docs/deployment.md) |
 | Runtime | transport, lifecycle, real time, phases | `keel run` · `keel stop` · `keel update` | [dataflow](docs/dataflow.md) |
-| Control | joints, controllers, CAN, simulation, lockstep, microcontrollers | `keel-pid` · `keel-sim` · `keel-can` | [control](docs/control.md) |
+| Control | joints, sensors, cameras, controllers, CAN, simulation, lockstep, microcontrollers | `keel-pid` · `keel-sim` · `keel-can` | [control](docs/control.md) |
+| Simulation | a robot arm in MuJoCo: joints, IMU, force sensor and cameras with a hardware model, parts that break, a pick-and-place | `keel-mujoco` · `examples/mujoco-arm.yml` | [decision 0031](docs/decisions/0031-devices-and-simulation.md) |
 | Observability | tracing, recording, replay, a flight recorder | `keel top` · `keel trace` · `keel replay` | [observability](docs/observability.md) |
 | Agent | an agent looks at a running dataflow and says what is wrong, read-only | `keel-mcp` · `examples/agent/run.sh` | [decision 0030](docs/decisions/0030-agent-tools.md) |
 
@@ -84,8 +85,9 @@ crates/keel          node API: shared memory, channels, tracing, stamps, periodi
 crates/keel-daemon   runs dataflows: sessions, coordinator, daemon, control API
 crates/keel-cli      the `keel` command, including the `keel top` TUI
 crates/keel-record   recordings: the file format and the recorder node
-crates/keel-control  control above the node API: joint messages, cycles, a PID,
-                     a simulated joint, joints on a CAN bus
+crates/keel-control  control above the node API: messages, laws, devices and their
+                     loops, a hardware model, simulated devices, a CAN bus
+crates/keel-mujoco   a simulated robot in MuJoCo: joints, sensors, cameras, one node
 crates/keel-micro    a node on a microcontroller: no_std, no allocation
 crates/keel-serial   the node standing in for that chip on a serial port
 crates/keel-mcp      an MCP server over the control API, for an agent to look at a dataflow
