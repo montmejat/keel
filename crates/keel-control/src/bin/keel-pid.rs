@@ -15,7 +15,7 @@ use std::io;
 use std::time::Duration;
 
 use keel::{Event, Node};
-use keel_control::pid::Pid;
+use keel_control::law::Pid;
 use keel_control::{arg, Command, State};
 
 /// A gap between states longer than this isn't integrated over: the joint
@@ -49,13 +49,13 @@ fn main() -> io::Result<()> {
         pids.resize(joints, pid);
         commands.resize(joints, Command::default());
         for ((state, pid), command) in State::read(&data).zip(&mut pids).zip(&mut commands) {
-            command.effort = pid.update(target, state, dt);
+            *command = Command::effort(pid.update(target, state, dt));
         }
         if now.saturating_sub(said) >= 1_000_000_000 {
             said = now;
             let joints: Vec<String> = (State::read(&data).zip(&commands))
                 .map(|(s, c)| {
-                    format!("at {:.3} rad, {:+.3} rad/s, pushing {:+.2} N m", s.position, s.velocity, c.effort)
+                    format!("at {:.3} rad, {:+.3} rad/s, pushing {:+.2} N m", s.position, s.velocity, c.value)
                 })
                 .collect();
             println!("{:.0}s target {target}: {}", (now - started) as f64 / 1e9, joints.join("; "));

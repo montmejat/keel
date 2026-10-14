@@ -700,6 +700,7 @@ version = "0.1.0"
 dependencies = [
  "keel",
  "libc",
+ "serde",
 ]
 
 [[package]]

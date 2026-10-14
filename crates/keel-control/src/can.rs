@@ -3,13 +3,14 @@
 //!
 //! Also the frames `keel-can` speaks, in the absence of a real drive to
 //! follow: a state frame per joint from the drive, a command frame per joint
-//! to it.
+//! to it; and [`CanJoints`], the joints at the other end, as a device.
 
 use std::ffi::CString;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
-use crate::{Command, State};
+use crate::device::Joints;
+use crate::{Command, Mode, State};
 
 /// A classic CAN frame: an 11-bit id and up to 8 bytes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -103,7 +104,8 @@ impl Bus {
     }
 }
 
-/// Command for joint `n`: id `COMMAND + n`, the effort as an `f32`.
+/// Command for joint `n`: id `COMMAND + n`, the value as an `f32`, then
+/// its mode in a byte.
 pub const COMMAND: u32 = 0x100;
 /// State of joint `n`: id `STATE + n`, position then velocity as `f32`s.
 pub const STATE: u32 = 0x180;
@@ -112,8 +114,9 @@ pub const MAX_JOINTS: usize = (STATE - COMMAND) as usize;
 
 pub fn command_frame(joint: usize, command: Command) -> Frame {
     let mut data = [0; 8];
-    data[..4].copy_from_slice(&(command.effort as f32).to_le_bytes());
-    Frame { id: COMMAND + joint as u32, len: 4, data }
+    data[..4].copy_from_slice(&(command.value as f32).to_le_bytes());
+    data[4] = command.mode as u8;
+    Frame { id: COMMAND + joint as u32, len: 5, data }
 }
 
 pub fn state_frame(joint: usize, state: State) -> Frame {
@@ -127,13 +130,65 @@ pub fn state_frame(joint: usize, state: State) -> Frame {
 /// `joints` joints.
 pub fn as_command(frame: &Frame, joints: usize) -> Option<(usize, Command)> {
     let joint = frame.id.checked_sub(COMMAND)? as usize;
-    (joint < joints && frame.len == 4).then(|| (joint, Command { effort: f32_at(&frame.data, 0).into() }))
+    let mode = Mode::from_u8(frame.data[4])?;
+    (joint < joints && frame.len == 5).then(|| (joint, Command { mode, value: f32_at(&frame.data, 0).into() }))
 }
 
 pub fn as_state(frame: &Frame, joints: usize) -> Option<(usize, State)> {
     let joint = frame.id.checked_sub(STATE)? as usize;
     let state = State { position: f32_at(&frame.data, 0).into(), velocity: f32_at(&frame.data, 4).into() };
     (joint < joints && frame.len == 8).then_some((joint, state))
+}
+
+/// Joints on a bus: what their drives last reported, and commands to them.
+/// The drives `keel-can-motor` plays close every loop themselves.
+pub struct CanJoints {
+    bus: Bus,
+    states: Vec<State>,
+    /// Which joints have reported since the last complete state.
+    fresh: Vec<bool>,
+}
+
+impl CanJoints {
+    pub fn open(interface: &str, joints: usize) -> io::Result<CanJoints> {
+        if joints > MAX_JOINTS {
+            return Err(io::Error::other(format!("a bus carries at most {MAX_JOINTS} joints")));
+        }
+        Ok(CanJoints { bus: Bus::open(interface)?, states: vec![State::default(); joints], fresh: vec![false; joints] })
+    }
+}
+
+impl Joints for CanJoints {
+    fn count(&self) -> usize {
+        self.states.len()
+    }
+
+    /// A state is every joint's: nothing is published from half a bus.
+    fn read(&mut self, states: &mut [State]) -> io::Result<Option<u64>> {
+        let read = keel::trace::now_ns();
+        while let Some(frame) = self.bus.try_recv()? {
+            if let Some((joint, state)) = as_state(&frame, self.states.len()) {
+                (self.states[joint], self.fresh[joint]) = (state, true);
+            }
+        }
+        if !self.fresh.iter().all(|&f| f) {
+            return Ok(None);
+        }
+        self.fresh.fill(false);
+        states.copy_from_slice(&self.states);
+        Ok(Some(read))
+    }
+
+    fn write(&mut self, commands: &[Command]) -> io::Result<()> {
+        for (joint, command) in commands.iter().enumerate() {
+            self.bus.send(&command_frame(joint, *command))?;
+        }
+        Ok(())
+    }
+
+    fn closes(&self, _mode: Mode) -> bool {
+        true
+    }
 }
 
 fn f32_at(bytes: &[u8], at: usize) -> f32 {
@@ -150,8 +205,9 @@ mod tests {
         assert_eq!(as_state(&state_frame(2, state), 3), Some((2, state)));
         assert_eq!(as_state(&state_frame(2, state), 2), None, "no such joint");
         assert_eq!(as_command(&state_frame(2, state), 3), None, "not a command");
-        let command = Command { effort: -4.0 };
-        assert_eq!(as_command(&command_frame(0, command), 1), Some((0, command)));
+        for command in [Command::effort(-4.0), Command::position(0.5)] {
+            assert_eq!(as_command(&command_frame(0, command), 1), Some((0, command)));
+        }
     }
 
     /// Needs a `vcan0`; without root:

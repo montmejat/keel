@@ -1,11 +1,13 @@
 //! Stands in for drives on a CAN bus: the pendulums of `keel-sim`, reached
-//! only through frames. A node with no inputs or outputs, there so that keel
-//! starts and stops it with the rest.
+//! only through frames, each behind the same drive model as a simulated
+//! arm's ([`keel_control::drive`]). A node with no inputs or outputs, there
+//! so that keel starts and stops it with the rest.
 //!
-//! Like a real drive, it applies a command when its frame arrives, and lets
-//! go when commands stop coming. It reports each joint's state once per
-//! period, on its own tick: give it a `phase_us` that puts the report just
-//! before the bus master's tick, or the master may read the bus first.
+//! Like a real drive, it applies a command when its frame arrives, closing
+//! the loop itself for a position or a velocity, and lets go when commands
+//! stop coming. It reports each joint's state once per period, on its own
+//! tick: give it a `phase_us` that puts the report just before the bus
+//! master's tick, or the master may read the bus first.
 //!
 //! `--interface vcan0 --joints 1 --hz 1000`
 
@@ -15,12 +17,10 @@ use std::time::Duration;
 use keel::periodic::{self, next_tick};
 use keel::trace::now_ns;
 use keel::{Event, Node};
+use keel_control::arg;
 use keel_control::can::{self, Bus};
+use keel_control::drive::{Drive, DriveSettings};
 use keel_control::plant::Pendulum;
-use keel_control::{arg, Command};
-
-/// Without a command for this long, a joint's effort drops to zero.
-const COMMAND_TIMEOUT: u64 = 100_000_000;
 
 fn main() -> io::Result<()> {
     let interface: String = arg("interface", "vcan0".into())?;
@@ -30,7 +30,7 @@ fn main() -> io::Result<()> {
     let mut node = Node::from_env()?;
     let mut drives = Drives {
         plants: vec![Pendulum::default(); joints],
-        commands: vec![(Command::default(), 0); joints],
+        drives: (0..joints).map(|_| Drive::new(DriveSettings::default())).collect::<io::Result<_>>()?,
         stepped: now_ns(),
     };
 
@@ -47,7 +47,7 @@ fn main() -> io::Result<()> {
                 while let Some(frame) = bus.try_recv()? {
                     if let Some((joint, command)) = can::as_command(&frame, joints) {
                         drives.step_to(now);
-                        drives.commands[joint] = (command, now);
+                        drives.drives[joint].command(now, command);
                     }
                 }
             }
@@ -66,22 +66,20 @@ fn main() -> io::Result<()> {
 
 struct Drives {
     plants: Vec<Pendulum>,
-    /// Each joint's command, and when it arrived.
-    commands: Vec<(Command, u64)>,
+    drives: Vec<Drive>,
     /// How far the pendulums have been stepped.
     stepped: u64,
 }
 
 impl Drives {
-    /// Steps every pendulum to `t` under the efforts in force until then.
+    /// Steps every pendulum to `t` under its drive's torque.
     fn step_to(&mut self, t: u64) {
         let dt = t.saturating_sub(self.stepped) as f64 / 1e9;
         if dt <= 0.0 {
             return;
         }
-        for (plant, (command, at)) in self.plants.iter_mut().zip(&self.commands) {
-            let effort = if t.saturating_sub(*at) < COMMAND_TIMEOUT { command.effort } else { 0.0 };
-            plant.step(effort, dt);
+        for (plant, drive) in self.plants.iter_mut().zip(&mut self.drives) {
+            plant.step(drive.torque(t, plant.state(), dt), dt);
         }
         self.stepped = t;
     }

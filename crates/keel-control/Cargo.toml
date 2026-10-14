@@ -3,8 +3,9 @@ name = "keel-control"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Control: joint messages, a PID, a simulated joint, and a CAN bus, as nodes"
+description = "Control: joints, sensors and cameras, the laws closing their loops, simulated devices, and a CAN bus, as nodes"
 
 [dependencies]
 keel = { path = "../keel" }
 libc = "0.2"
+serde = { version = "1", features = ["derive"] }
