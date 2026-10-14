@@ -77,7 +77,7 @@ fn tools() -> Value {
     json!([
         {
             "name": "dataflows",
-            "description": "List the running keel dataflows: pid, uptime, how many nodes are running, and the dataflow file.",
+            "description": "List the running keel dataflows: pid, uptime, how many nodes are running, the dataflow file and, if it was deployed, the deployment's name. In a fleet, every robot runs the same dataflow file: the deployment's name, `<dataflow>-<robot>`, says which robot it is. A robot has a coordinator, which sees all its machines, and a daemon per machine.",
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
@@ -131,7 +131,14 @@ fn tools() -> Value {
 fn call(tool: &str, args: &Value) -> Result<String, String> {
     let json = |v: Value| serde_json::to_string_pretty(&v).map_err(|e| e.to_string());
     match tool {
-        "dataflows" => json(serde_json::to_value(control::summaries()).map_err(|e| e.to_string())?),
+        "dataflows" => {
+            let mut summaries = serde_json::to_value(control::summaries()).map_err(|e| e.to_string())?;
+            for summary in summaries.as_array_mut().into_iter().flatten() {
+                let name = summary["deployment"].as_str().and_then(deployment_name);
+                summary["deployment_name"] = json!(name);
+            }
+            json(summaries)
+        }
         "status" => {
             let status = client(args)?.status().map_err(|e| e.to_string())?;
             let nodes: Vec<Value> = (status.nodes.iter())
@@ -149,8 +156,9 @@ fn call(tool: &str, args: &Value) -> Result<String, String> {
             let links: Vec<Value> = (status.links.iter())
                 .map(|l| json!({"source": l.source, "targets": l.targets, "messages": l.messages, "bytes": l.bytes}))
                 .collect();
+            let deployment_name = status.deployment.as_deref().and_then(deployment_name);
             json(json!({"dataflow": status.dataflow, "uptime_ms": status.uptime_ms, "stopping": status.stopping,
-                        "deployment": status.deployment, "nodes": nodes, "links": links}))
+                        "deployment": status.deployment, "deployment_name": deployment_name, "nodes": nodes, "links": links}))
         }
         "logs" => {
             let last = (args["last"].as_u64().unwrap_or(50) as usize).min(MAX_LOG_LINES);
@@ -199,6 +207,12 @@ fn call(tool: &str, args: &Value) -> Result<String, String> {
     }
 }
 
+/// A deployment's name (`<dataflow>-<robot>` for a fleet's robot), from the
+/// deployments made on this machine.
+fn deployment_name(id: &str) -> Option<String> {
+    keel_daemon::packaging::Registry::open().ok()?.find(id).ok().map(|d| d.name)
+}
+
 /// A connection that holds what it asks for until a person approves it.
 fn agent_client(args: &Value) -> Result<Client, String> {
     let pid = control::pick(args["pid"].as_u64().map(|p| p as u32)).map_err(|e| e.replace("--pid", "`pid`"))?;
@@ -224,7 +238,9 @@ fn wait_for(client: &mut Client, id: u64) -> Result<String, String> {
         // Approved is said before the action runs, its outcome after: wait for both.
         match (action.state, &action.outcome) {
             (ActionState::Denied, _) => {
-                return Err(format!("A person denied it (action {id}). Don't try it again; say what you found instead."))
+                return Err(format!(
+                    "A person denied it (action {id}). Don't try it again; say what you found instead."
+                ))
             }
             (ActionState::Approved, Some(outcome)) => return Ok(format!("A person approved it, and: {outcome}")),
             _ => {}
