@@ -292,6 +292,7 @@ ls /tmp/keel-frames                        # wrist.ppm, wrist_depth.pgm, overvie
 keel run examples/mujoco-lockstep.yml      # the same, as fast as it goes
 KEEL_BREAK=joint3:freeze@8 keel run examples/mujoco-lockstep.yml
 keel logs health                           # "PROBLEM joint3 reads exactly -1.3212, not a bit of change..."
+examples/mujoco/diagnose.sh joint2:dead    # an agent, with keel-mcp's tools only, says what broke
 ```
 
 Measured on the laptop (RTX 2060), release build, lockstep: 12× real time
@@ -299,6 +300,10 @@ with the three cameras (30 pictures a second, five of them 640×480), 70×
 without. In real time, the joints' loop at 100 Hz missed no deadline. The
 health checks found each fault tried (a dead drive, a frozen encoder, a
 frozen or noisy IMU, a dark or frozen camera) and nothing on a healthy run.
+Asked what was wrong with the robot, with `keel-mcp`'s tools only, an agent
+(Sonnet, `diagnose.sh`) named the part and its fault for a dead drive, a
+frozen encoder, a noisy IMU and a covered camera, and found nothing wrong
+with a healthy arm: five out of five.
 
 ## Not yet
 

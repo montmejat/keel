@@ -18,7 +18,7 @@ Each file's header says what it shows and what it needs. Run with
 | `control-sim.yml` | a PID holding a simulated joint at 1 kHz, the loop closed within its cycle ([control](../docs/control.md)) |
 | `control-lockstep.yml` | the same in lockstep, faster than real time |
 | `mujoco-arm.yml` | a Piper arm in MuJoCo picking up a cube: joints, IMU, force sensor and cameras with a hardware model, its health watched; `KEEL_BREAK=joint2:dead@10` breaks a part. Needs `mujoco/setup.sh` ([control](../docs/control.md#a-simulated-robot)) |
-| `mujoco-lockstep.yml` | the same in lockstep, as fast as the machine allows, cameras included |
+| `mujoco-lockstep.yml` | the same in lockstep, as fast as the machine allows, cameras included; `mujoco/diagnose.sh joint2:dead` breaks a part and asks an agent which |
 | `control-can.yml` | the joint behind a virtual CAN bus, a stand-in drive at the other end |
 | `control-micro.yml` | the joint on a (pretend) microcontroller |
 | `bench.yml` | round-trip latency and throughput, 64 B to 8 MiB |

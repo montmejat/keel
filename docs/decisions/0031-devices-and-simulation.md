@@ -71,6 +71,9 @@ and failures. In a simulation they share one world.
 - Breaking a part is a flag. The health checks found each fault tried: a
   dead drive, a frozen encoder (which the drive, closing its loop on its own
   encoder, doesn't notice), a frozen or noisy IMU, a dark or frozen camera.
+  An agent asked what was wrong, with `keel-mcp`'s tools only
+  (`examples/mujoco/diagnose.sh`), named the part and the fault each time,
+  and nothing on a healthy arm: five out of five, with Sonnet.
 - A robot and its simulation need different dataflow files: three driver
   nodes against one, so a controller's input names `joints/state` or
   `sim/state`. Naming outputs apart from their nodes would remove that.

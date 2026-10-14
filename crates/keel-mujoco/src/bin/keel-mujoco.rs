@@ -34,9 +34,9 @@ fn main() -> io::Result<()> {
     let path: PathBuf = arg("robot", PathBuf::from("examples/mujoco/piper.yml"))?;
     let mut robot = Robot::read(&path)?;
     let breaks = arg("break", std::env::var("KEEL_BREAK").unwrap_or_default())?;
+    // Silently: hardware doesn't say when it breaks.
     for part in breaks.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         robot.break_device(part)?;
-        println!("broken: {part}");
     }
     let loop_at: String = arg("loop", String::new())?;
     if !loop_at.is_empty() {
