@@ -1,0 +1,33 @@
+# mujoco-arm.yml in lockstep: no clock, the simulation steps as soon as the
+# routine has answered, as fast as the machine allows, and the same way
+# every run. The cameras still see: the simulation renders when a camera is
+# due, whatever the pace. The routine and the health checks take their time
+# from the stamps, so they behave as in real time: `keel logs controller`
+# shows the cycles go by faster.
+nodes:
+  - id: sim
+    path: ../target/debug/keel-mujoco
+    args: ["--robot", "examples/mujoco/piper.yml", "--cycle", "lockstep"]
+    inputs:
+      command: { source: controller/command, keep: latest }
+
+  - id: controller
+    path: ../target/debug/arm-routine
+    inputs:
+      state: { source: sim/state, keep: latest }
+
+  - id: health
+    path: ../target/debug/arm-health
+    inputs:
+      state: { source: sim/state, keep: latest }
+      command: { source: controller/command, keep: latest }
+      frames: { source: sim/wrist, keep: latest }
+      imu: { source: sim/imu, keep: latest }
+
+  - id: viewer
+    path: ../target/debug/frame-saver
+    args: ["--far", "0.6"]
+    inputs:
+      wrist: { source: sim/wrist, keep: latest }
+      wrist_depth: { source: sim/wrist_depth, keep: latest }
+      overview: { source: sim/overview, keep: latest }

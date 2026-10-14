@@ -1,0 +1,12 @@
+[package]
+name = "keel-mujoco"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A simulated robot in MuJoCo: its joints, sensors and cameras as keel-control's simulated devices, in one node"
+
+[dependencies]
+keel = { path = "../keel" }
+keel-control = { path = "../keel-control" }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"

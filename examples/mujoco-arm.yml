@@ -1,0 +1,40 @@
+# A Piper arm in MuJoCo, picking up a cube and putting it down, over and
+# over, in real time; its health watched; what its cameras see on disk.
+# The arm's joints, IMU, wrist force sensor and cameras are simulated
+# devices in one node, each with its hardware model (examples/mujoco/piper.yml).
+# Needs MuJoCo and the arm: examples/mujoco/setup.sh, then cargo build.
+#
+#   keel run examples/mujoco-arm.yml
+#   keel logs health                # what's wrong, if anything
+#   keel logs controller            # the routine's moves
+#   ls /tmp/keel-frames             # wrist, wrist_depth, overview
+#
+# mujoco-lockstep.yml runs it as fast as the machine allows;
+# mujoco-broken.yml breaks a part.
+nodes:
+  - id: sim
+    path: ../target/debug/keel-mujoco
+    args: ["--robot", "examples/mujoco/piper.yml"]
+    inputs:
+      command: { source: controller/command, keep: latest }
+
+  - id: controller
+    path: ../target/debug/arm-routine
+    inputs:
+      state: { source: sim/state, keep: latest }
+
+  - id: health
+    path: ../target/debug/arm-health
+    inputs:
+      state: { source: sim/state, keep: latest }
+      command: { source: controller/command, keep: latest }
+      frames: { source: sim/wrist, keep: latest }
+      imu: { source: sim/imu, keep: latest }
+
+  - id: viewer
+    path: ../target/debug/frame-saver
+    args: ["--far", "0.6"]
+    inputs:
+      wrist: { source: sim/wrist, keep: latest }
+      wrist_depth: { source: sim/wrist_depth, keep: latest }
+      overview: { source: sim/overview, keep: latest }

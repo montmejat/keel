@@ -1,0 +1,56 @@
+# The simulated Piper: the scene, where its sensors and cameras are
+# mounted, and what its hardware is like. keel-mujoco reads it; keel-control
+# models the hardware (drive.rs, model.rs).
+scene: scene.xml
+keyframe: home
+
+joints:
+  # The joints' loop: a state out, a command in, this many times a second.
+  hz: 100
+  # Position loops close on the drives (`drive`), or in keel (`keel`).
+  loop: drive
+  # Every drive, on top of its joint's servo gains in the scene: commands
+  # take a millisecond to act, and a drive lets go after 100 ms without one.
+  drive: { delay_ms: 1, timeout_ms: 100 }
+  # Every encoder: about 16 bits a turn, a little noise.
+  encoder: { quantum: 0.0001, noise: 0.0002 }
+  # Per joint, by actuator name: `drive` and `encoder` on top of the above.
+  # A broken one: `each: { joint2: { drive: { fault: { what: dead, after_s: 10 } } } }`,
+  # or on the command line, `--break joint2:dead@10`.
+  each: {}
+
+sensors:
+  # An IMU in the wrist: acceleration (m/s², gravity included) then rate of
+  # turn (rad/s).
+  imu:
+    mount: { on: link6, at: [0, 0, 0.05] }
+    kinds: [accelerometer, gyro]
+    hz: 200
+    model: { noise: 0.02, bias: 0.05, drift: 0.002, delay_ms: 2 }
+  # A force/torque sensor between the wrist and the hand: N, then N m.
+  wrist_ft:
+    mount: { on: link6, at: [0, 0, 0.02] }
+    kinds: [force, torque]
+    hz: 250
+    model: { noise: 0.05, range: 50 }
+
+cameras:
+  # In the wrist, beside the gripper, looking along the fingers.
+  wrist:
+    mount: { on: link6, at: [0.06, 0, 0], euler: [180, 15, 90] }
+    fovy: 75
+    size: [320, 240]
+    hz: 15
+    model: { noise: 3, blur: 1 }
+  wrist_depth:
+    mount: { on: link6, at: [0.06, 0, 0], euler: [180, 15, 90] }
+    fovy: 75
+    size: [160, 120]
+    hz: 10
+    depth: true
+    model: { noise: 0.002, dropouts: 0.01 }
+  # The scene's own camera, looking on: for people, at a few frames a second.
+  overview:
+    mjcf: overview
+    size: [640, 480]
+    hz: 5

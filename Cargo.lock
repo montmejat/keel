@@ -728,6 +728,16 @@ name = "keel-micro"
 version = "0.1.0"
 
 [[package]]
+name = "keel-mujoco"
+version = "0.1.0"
+dependencies = [
+ "keel",
+ "keel-control",
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
 name = "keel-record"
 version = "0.1.0"
 dependencies = [
@@ -884,6 +894,14 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys",
+]
+
+[[package]]
+name = "mujoco-example"
+version = "0.1.0"
+dependencies = [
+ "keel",
+ "keel-control",
 ]
 
 [[package]]

@@ -1,0 +1,45 @@
+<!-- The Piper arm (MuJoCo Menagerie, fetched by setup.sh into ./piper) on a
+     table, with a few things to pick up and a camera looking on. Its
+     sensors and its wrist camera aren't here: piper.yml mounts them. -->
+<mujoco model="piper_tabletop">
+  <include file="piper/piper.xml"/>
+  <!-- After the include: its meshes are in piper/assets, from here. -->
+  <compiler meshdir="piper/assets"/>
+
+  <visual>
+    <headlight diffuse="0.35 0.35 0.35" ambient="0.22 0.22 0.24" specular="0.05 0.05 0.05"/>
+    <global azimuth="140" elevation="-25" offwidth="1280" offheight="960"/>
+    <quality shadowsize="4096" offsamples="8"/>
+    <rgba haze="0.75 0.8 0.85 1"/>
+    <map znear="0.01" zfar="50" haze="0.4"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.78 0.83 0.88" rgb2="0.42 0.45 0.5" width="512" height="3072"/>
+    <texture type="2d" name="floor" builtin="checker" rgb1="0.56 0.55 0.52" rgb2="0.5 0.49 0.46" width="512" height="512"/>
+    <material name="floor" texture="floor" texuniform="true" texrepeat="3 3" reflectance="0.04"/>
+    <material name="table" rgba="0.6 0.45 0.31 1" specular="0.2" shininess="0.3" reflectance="0.03"/>
+    <material name="red" rgba="0.78 0.14 0.11 1" specular="0.3" shininess="0.5"/>
+    <material name="blue" rgba="0.14 0.3 0.72 1" specular="0.3" shininess="0.5"/>
+    <material name="yellow" rgba="0.92 0.74 0.14 1" specular="0.4" shininess="0.6"/>
+    <material name="ceramic" rgba="0.93 0.93 0.9 1" specular="0.6" shininess="0.8" reflectance="0.05"/>
+  </asset>
+
+  <worldbody>
+    <light name="sun" pos="0.8 -0.6 2.2" dir="-0.35 0.25 -1" directional="true" castshadow="true" diffuse="0.75 0.73 0.68"/>
+    <light name="fill" pos="-1 1 1.5" dir="0.5 -0.5 -0.6" directional="true" castshadow="false" diffuse="0.18 0.2 0.24"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="floor" pos="0 0 -0.75"/>
+    <body name="table" pos="0.25 0 0">
+      <geom name="top" type="box" size="0.6 0.45 0.02" pos="0 0 -0.02" material="table"/>
+      <geom type="box" size="0.025 0.025 0.355" pos="-0.55 -0.4 -0.395" material="table"/>
+      <geom type="box" size="0.025 0.025 0.355" pos="0.55 -0.4 -0.395" material="table"/>
+      <geom type="box" size="0.025 0.025 0.355" pos="-0.55 0.4 -0.395" material="table"/>
+      <geom type="box" size="0.025 0.025 0.355" pos="0.55 0.4 -0.395" material="table"/>
+    </body>
+    <body name="red_cube" pos="0.3 0.12 0.02"><freejoint/><geom type="box" size="0.02 0.02 0.02" material="red" mass="0.05"/></body>
+    <body name="blue_cube" pos="0.35 -0.1 0.02"><freejoint/><geom type="box" size="0.02 0.02 0.02" material="blue" mass="0.05"/></body>
+    <body name="ball" pos="0.24 -0.22 0.025"><freejoint/><geom type="sphere" size="0.025" material="yellow" mass="0.03"/></body>
+    <body name="cup" pos="0.45 0.22 0.045"><freejoint/><geom type="cylinder" size="0.035 0.045" material="ceramic" mass="0.1"/></body>
+    <camera name="overview" pos="1.1 -0.75 0.6" xyaxes="0.56 0.83 0 -0.33 0.22 0.92" fovy="50"/>
+  </worldbody>
+</mujoco>

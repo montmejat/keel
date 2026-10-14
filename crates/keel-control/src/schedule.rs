@@ -45,6 +45,13 @@ pub trait Tick {
 pub trait Clock {
     fn now(&self) -> u64;
 
+    /// Where the ticks' grid starts: keel's clock's zero, so that loops of
+    /// one period tick together whenever they started; a simulation's
+    /// start, so that its ticks fall at the same moments of it every run.
+    fn epoch(&self) -> u64 {
+        0
+    }
+
     /// Brings the time to `t`: waits for it, or simulates up to it.
     fn advance_to(&mut self, t: u64) -> io::Result<()>;
 }
@@ -77,8 +84,9 @@ pub fn run(node: &mut Node, clock: &mut dyn Clock, mut loops: Vec<Box<dyn Tick +
         return Err(io::Error::other("nothing to run: no device"));
     }
     let phase = periodic::phase().as_nanos() as u64;
-    let start = clock.now();
-    let mut due: Vec<u64> = loops.iter().map(|l| next_tick(start, l.period_ns().max(1), phase)).collect();
+    let (start, epoch) = (clock.now(), clock.epoch());
+    let mut due: Vec<u64> =
+        loops.iter().map(|l| epoch + next_tick(start - epoch, l.period_ns().max(1), phase)).collect();
     loop {
         let t = *due.iter().min().unwrap();
         clock.advance_to(t)?;
@@ -219,6 +227,14 @@ impl<J: Joints> JointLoop<J> {
             heard: Instant::now(),
             complained: false,
         })
+    }
+
+    /// A law per joint, for [`LoopAt::Keel`], instead of `settings.pid`
+    /// for all: joints differ.
+    pub fn with_laws(mut self, pids: Vec<Pid>) -> Self {
+        assert_eq!(pids.len(), self.pids.len(), "a law per joint");
+        self.pids = pids;
+        self
     }
 
     fn take(asked: &mut [Command], data: &[u8]) {

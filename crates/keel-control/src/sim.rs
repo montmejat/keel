@@ -105,6 +105,10 @@ impl Clock for SimClock {
         self.world.borrow().now()
     }
 
+    fn epoch(&self) -> u64 {
+        self.world.borrow().origin
+    }
+
     fn advance_to(&mut self, t: u64) -> io::Result<()> {
         let mut world = self.world.borrow_mut();
         while world.now() < t {

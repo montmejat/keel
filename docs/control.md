@@ -8,33 +8,84 @@ everything here is built with what any user of keel gets.
 ## The layers
 
 ```
- controller          keel-pid, or yours: sees `state`, sends `command`
+ controller          keel-pid, arm-routine, or yours: sees `state`, sends `command`
  ─────────────────── keel: state ⇄ command, stamped, in shared memory ───
- joints              keel-can (a bus master)   |  keel-sim (a simulation)
+ devices             keel-can (joints on a bus)  |  keel-sim, keel-mujoco (simulated)
  ─────────────────── the wire: can0 / vcan0 ────────────────────────────
- drives              real drives               |  keel-can-motor (a stand-in)
+ drives              real drives                 |  keel-can-motor (a stand-in)
 ```
 
 **The dataflow is the hardware interface.** Whatever publishes `state` and
-takes `command` is the joints; there's no driver trait and no plugin. The
-controller can't tell a simulation from a bus, or a live run from a replay
-or from a simulation in lockstep, and nothing above the joints should try
-to: swapping one for the other is a change to the dataflow file.
+takes `command` is the joints. The controller can't tell a simulation from a
+bus, or a live run from a replay or from a simulation in lockstep, and
+nothing above the joints should try to: swapping one for the other is a
+change to the dataflow file.
+
+**On a robot, a node per device**: the joints behind their bus, an IMU on
+its link, a camera, each with its own driver, failing and restarting on its
+own. **A simulated robot is one node**, because its devices share a world:
+the same loops, over simulated devices ([0031](decisions/0031-devices-and-simulation.md)).
 
 A simulation can also sit lower, below the wire: `keel-can-motor` plays the
 drives at the other end of a virtual CAN bus, so the bus master and its
 protocol run in simulation as they would on a robot.
 
+## Inside keel-control
+
+In layers, each using only those below it:
+
+| layer | what | where |
+|---|---|---|
+| nodes | wiring only | `src/bin`, `keel-mujoco` |
+| loops | `JointLoop`, `SensorLoop`, `CameraLoop`: rates, stamps, deadlines; one scheduler runs them on the wall clock or a simulation's | `schedule.rs`, `cycle.rs` |
+| devices | a trait per kind: `Joints`, `VectorSensor`, `Camera`; real drivers (`CanJoints`) and simulated ones (`SimJoints`, `SimSensor`, `SimCamera`) | `device.rs`, `can.rs`, `sim.rs` |
+| hardware model | a drive; a sensor's and a camera's imperfections and faults | `drive.rs`, `model.rs` |
+| laws | `Pid`, for positions and velocities: pure maths | `law.rs` |
+| messages | `State`, `Command`, a vector, an `Image` | `lib.rs` |
+
+So `keel-can` is the joints' loop over a bus, and `keel-sim` the same loop
+over simulated pendulums: a few lines each. A new real device is one trait
+implementation (open, read, write); its loop comes with it.
+
+A simulated device is a physics engine's truth seen through a hardware
+model. The physics (`Physics`: MuJoCo, or pendulums) knows nothing of
+sensors. A drive model stands between a command and the torque, with the
+drive's own loop, a delay, a torque limit, letting go without commands, and
+faults; each sensor reading goes through delay, bias, drift, noise,
+quantization and range; each picture through exposure, noise, blur and
+dropouts. All seeded: two runs of the simulated Piper in lockstep gave the
+same joint states and IMU readings, message for message (7473 and 14946 of
+them); its pictures differed by a level, on a pixel or two, now and then:
+the GPU.
+
+## Control modes
+
+A command says what it asks for: a **position**, a **velocity** or an
+**effort**. Where a position or velocity loop closes is a setting of the
+joints, not of the controller:
+
+- `--loop drive` (default): commands go to the drives as they are, and the
+  drive closes the loop: a real drive's firmware, or the drive model, at
+  the simulation's rate.
+- `--loop keel`: the joints' loop closes it, every tick, with the same
+  `Pid`, and sends the drives efforts.
+
+The controller doesn't change. The rate does matter: the simulated Piper
+holds its poses with its loops in keel at 100 Hz, and flails at 20 Hz,
+where the drives, closing them at 500 Hz, still hold it. A controller node
+like `keel-pid` stays the place for laws that need more than one joint.
+
 ## Messages
 
 Payloads are raw bytes to keel ([0003](decisions/0003-raw-byte-payloads.md));
-this crate gives two of them a layout. One message carries every joint of a
-bus or simulation, back to back, little-endian:
+this crate gives four of them a layout, little-endian:
 
-| message | per joint | bytes |
+| message | layout | bytes |
 |---|---|---:|
-| `State` | position (rad), velocity (rad/s), as `f64` | 16 |
-| `Command` | effort (N m), as `f64` | 8 |
+| `State` | per joint: position (rad), velocity (rad/s), as `f64` | 16 a joint |
+| `Command` | per joint: a value as `f64`, its mode in a byte (effort, position, velocity), padding | 16 a joint |
+| vector | a sensor's numbers as `f64`s, their meaning in the sensor's settings | 8 a number |
+| `Image` | width, height, format (RGB8, or depth as `f32` metres), a spare `u32`, then the pixels | 16 + pixels |
 
 ```rust
 for state in State::read(&data) { /* state.position, state.velocity */ }
@@ -50,8 +101,9 @@ stamp of the state it answers.
 
 | node | what it is | flags |
 |---|---|---|
-| `keel-sim` | pendulums, stepped each tick | `--joints 1 --hz 1000 --cycle same\|next\|lockstep --deadline-us 300 --spin-us 0` |
-| `keel-can` | a cyclic bus master over SocketCAN | `--interface can0 --joints 1 --hz 1000 --cycle same\|next --deadline-us 300 --spin-us 0` |
+| `keel-sim` | pendulums, stepped each tick | `--joints 1 --hz 1000 --cycle same\|next\|lockstep --deadline-us 300 --loop drive\|keel --spin-us 0` |
+| `keel-can` | a cyclic bus master over SocketCAN | `--interface can0 --joints 1 --hz 1000 --cycle same\|next --deadline-us 300 --loop drive\|keel --spin-us 0` |
+| `keel-mujoco` | a simulated robot: joints, sensors, cameras ([below](#a-simulated-robot)) | `--robot examples/mujoco/piper.yml --cycle same\|next\|lockstep --break joint2:dead@10 --loop drive\|keel --hz 0` |
 | `keel-can-motor` | the drives at the other end of a (virtual) bus | `--interface vcan0 --joints 1 --hz 1000` |
 | `keel-pid` | a PID per joint, a command for each state | `--target 1.0 --kp 40 --ki 40 --kd 4 --limit 10 --spin-us 0 --period-us 0` |
 
@@ -155,7 +207,7 @@ fn main() -> std::io::Result<()> {
         let dt = if last == 0 { 0.0 } else { (data.stamp_ns() - last) as f64 / 1e9 };
         last = data.stamp_ns();
         commands.clear();
-        commands.extend(State::read(&data).map(|s| Command { effort: law(s, dt) }));
+        commands.extend(State::read(&data).map(|s| Command::effort(law(s, dt))));
         // Sent while `data` is held: the command answers this state, within
         // its cycle, and carries its stamp.
         node.send_with("command", commands.len() * Command::LEN, |p| Command::write(&commands, p))?;
@@ -209,18 +261,61 @@ unshare -rn sh -c 'ip link add vcan0 type vcan && ip link set vcan0 up &&
   ./target/debug/keel run examples/control-can.yml'
 ```
 
+## A simulated robot
+
+`keel-mujoco` is a robot in [MuJoCo](https://mujoco.org): its joints, and
+the sensors and cameras mounted on it, as simulated devices in one node.
+Its robot file says what it is (`examples/mujoco/piper.yml`):
+
+- **the scene**, an MJCF file: here MuJoCo Menagerie's AgileX Piper on a
+  table, with a cube to pick up;
+- **mounts**: an IMU and a force/torque sensor in the wrist, a colour
+  camera and a depth camera beside the gripper, each on a body of the
+  scene, each an output of the node at its own rate;
+- **the hardware**: every drive (starting from the scene's own servo gains:
+  the scene's position servos become plain motors, and keel's drive model
+  takes over), every encoder, each sensor's and camera's imperfections;
+- **faults**: in the file, or `--break joint2:dead@10,wrist:dark@20` (or
+  `KEEL_BREAK` in keel's environment): a drive dead or weak, an encoder or a
+  sensor frozen or noisy, a camera frozen or dark.
+
+MuJoCo is a C library: `examples/mujoco/setup.sh` fetches its release (and
+the Piper), and `keel-mujoco` builds with it from then on, through a small C
+shim; without it, it builds and says how to get it. Its pictures come from
+MuJoCo's classic OpenGL renderer, headless through EGL.
+
+```sh
+examples/mujoco/setup.sh && cargo build
+keel run examples/mujoco-arm.yml           # pick and place, in real time
+keel logs health                           # "health ok: 100 states/s, worst tracking joint5 0.211"
+ls /tmp/keel-frames                        # wrist.ppm, wrist_depth.pgm, overview.ppm
+keel run examples/mujoco-lockstep.yml      # the same, as fast as it goes
+KEEL_BREAK=joint3:freeze@8 keel run examples/mujoco-lockstep.yml
+keel logs health                           # "PROBLEM joint3 reads exactly -1.3212, not a bit of change..."
+```
+
+Measured on the laptop (RTX 2060), release build, lockstep: 12× real time
+with the three cameras (30 pictures a second, five of them 640×480), 70×
+without. In real time, the joints' loop at 100 Hz missed no deadline. The
+health checks found each fault tried (a dead drive, a frozen encoder, a
+frozen or noisy IMU, a dark or frozen camera) and nothing on a healthy run.
+
 ## Not yet
 
-- **Commands the drives take**: position, velocity, stiffness, damping and
-  torque (the MIT mode of quasi-direct-drive motors), and their protocol
-  over CAN-FD, in place of the made-up frames.
+- **Commands the drives take**: stiffness and damping alongside position
+  and torque (the MIT mode of quasi-direct-drive motors), and their
+  protocol over CAN-FD, in place of the made-up frames.
 - **A fresh state from request/response drives**: drives that answer each
   command with their state report one taken a cycle ago. A state request
   just before the tick (a phase) fixes it.
 - **Several buses, one controller**: two arms, two masters in phase, and a
   controller that waits for both states of a cycle.
-- **A simulation worth the name**: MuJoCo behind the virtual bus, and
-  cameras rendered into shared memory.
+- **Real sensor drivers**: an IMU's and a camera's (V4L2), as nodes of their
+  own over `SensorLoop` and `CameraLoop`.
+- **Prettier pictures**: MuJoCo's Filament renderer isn't in its release
+  library; Gaussian splats would go behind the same render call.
+- **The gripper's health**: it's a slide joint, in metres, and the checks'
+  thresholds are in radians: a dead gripper goes unnoticed.
 - **Slow loops**: a policy every Nth cycle, and an interpolator playing its
   actions back by their stamps.
 - **The age of a command** in `keel trace`: from its stamp to its sending.

@@ -167,7 +167,8 @@ impl VectorModel {
         while self.history.len() > 1 && self.history[1].0 <= seen {
             self.history.pop_front();
         }
-        let dt = now.saturating_sub(self.last_t) as f64 / 1e9;
+        // No time has passed at the first reading.
+        let dt = now.saturating_sub(self.last_t.max(start)) as f64 / 1e9;
         self.last_t = now;
         let fault = s.fault.filter(|f| f.active(start, now)).map(|f| f.what);
         let noise = if fault == Some(Breakdown::Noisy) { s.noise.max(1e-3) * 20.0 } else { s.noise };

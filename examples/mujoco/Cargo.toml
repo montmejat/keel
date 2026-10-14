@@ -1,0 +1,11 @@
+[package]
+name = "mujoco-example"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Nodes for the simulated Piper: a pick-and-place routine, its health checks, and a frame saver"
+
+[dependencies]
+keel = { path = "../../crates/keel" }
+keel-control = { path = "../../crates/keel-control" }
