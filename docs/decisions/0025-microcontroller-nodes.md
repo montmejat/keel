@@ -1,6 +1,7 @@
 # 0025: A microcontroller is a node, behind a bridge on a serial link
 
-**Status:** Accepted, 2026-10-01 (proposed 2026-10-01)
+**Status:** Accepted, 2026-10-01 (proposed 2026-10-01); the pretend chip,
+`keel-micro-joint`, retired by [0031](0031-devices-and-simulation.md)
 
 ## Context
 The last hop to hardware is usually a microcontroller: it reads the

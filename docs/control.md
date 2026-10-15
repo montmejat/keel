@@ -1,7 +1,7 @@
 # Control
 
 `keel-control` is the layer that turns keel into a robot's control stack:
-joints, a controller, the buses and simulations behind them. It's a crate
+joints, a controller, the buses behind them, and a simulated robot. It's a crate
 above the node API, not part of keel ([0021](decisions/0021-control-layer.md)):
 everything here is built with what any user of keel gets.
 
@@ -10,9 +10,9 @@ everything here is built with what any user of keel gets.
 ```
  controller          keel-pid, arm-routine, or yours: sees `state`, sends `command`
  ─────────────────── keel: state ⇄ command, stamped, in shared memory ───
- devices             keel-can (joints on a bus)  |  keel-sim, keel-mujoco (simulated)
- ─────────────────── the wire: can0 / vcan0 ────────────────────────────
- drives              real drives                 |  keel-can-motor (a stand-in)
+ devices             keel-can (joints on a bus)  |  keel-mujoco (simulated)
+ ─────────────────── the wire: can0 ──────────── |
+ drives              real drives                 |  the drive model, in MuJoCo
 ```
 
 **The dataflow is the hardware interface.** Whatever publishes `state` and
@@ -26,9 +26,8 @@ its link, a camera, each with its own driver, failing and restarting on its
 own. **A simulated robot is one node**, because its devices share a world:
 the same loops, over simulated devices ([0031](decisions/0031-devices-and-simulation.md)).
 
-A simulation can also sit lower, below the wire: `keel-can-motor` plays the
-drives at the other end of a virtual CAN bus, so the bus master and its
-protocol run in simulation as they would on a robot.
+The one simulation is MuJoCo's: no stand-in drives on a virtual bus, no
+pretend chip ([0031](decisions/0031-devices-and-simulation.md)).
 
 ## Inside keel-control
 
@@ -43,12 +42,12 @@ In layers, each using only those below it:
 | laws | `Pid`, for positions and velocities: pure maths | `law.rs` |
 | messages | `State`, `Command`, a vector, an `Image` | `lib.rs` |
 
-So `keel-can` is the joints' loop over a bus, and `keel-sim` the same loop
-over simulated pendulums: a few lines each. A new real device is one trait
+So `keel-can` is the joints' loop over a bus, and `keel-mujoco` runs the
+same loop over simulated joints: a few lines of wiring each. A new real device is one trait
 implementation (open, read, write); its loop comes with it.
 
 A simulated device is a physics engine's truth seen through a hardware
-model. The physics (`Physics`: MuJoCo, or pendulums) knows nothing of
+model. The physics (`Physics`: MuJoCo) knows nothing of
 sensors. A drive model stands between a command and the torque, with the
 drive's own loop, a delay, a torque limit, letting go without commands, and
 faults; each sensor reading goes through delay, bias, drift, noise,
@@ -101,10 +100,8 @@ stamp of the state it answers.
 
 | node | what it is | flags |
 |---|---|---|
-| `keel-sim` | pendulums, stepped each tick | `--joints 1 --hz 1000 --cycle same\|next\|lockstep --deadline-us 300 --loop drive\|keel --spin-us 0` |
 | `keel-can` | a cyclic bus master over SocketCAN | `--interface can0 --joints 1 --hz 1000 --cycle same\|next --deadline-us 300 --loop drive\|keel --spin-us 0` |
 | `keel-mujoco` | a simulated robot: joints, sensors, cameras ([below](#a-simulated-robot)) | `--robot examples/mujoco/piper.yml --cycle same\|next\|lockstep --break joint2:dead@10 --loop drive\|keel --hz 0` |
-| `keel-can-motor` | the drives at the other end of a (virtual) bus | `--interface vcan0 --joints 1 --hz 1000` |
 | `keel-pid` | a PID per joint, a command for each state | `--target 1.0 --kp 40 --ki 40 --kd 4 --limit 10 --spin-us 0 --period-us 0` |
 
 The CAN frames are made up (a command frame and a state frame per joint):
@@ -127,8 +124,7 @@ loop {
 ```
 
 It builds for a Cortex-M (`cargo build -p keel-micro --target
-thumbv7em-none-eabihf`) and has only run on a pretend chip so far: the same
-loop over a pseudo-terminal (`examples/control-micro.yml`, the PID again).
+thumbv7em-none-eabihf`) and hasn't run on a real chip yet.
 
 ## A cycle
 
@@ -172,9 +168,9 @@ tick of a 1 ms one. `phase_us` in the dataflow moves a node along its
 period:
 
 ```yaml
-  - id: motor
-    path: ../target/debug/keel-can-motor
-    phase_us: 900          # report 100 µs before the bus master's tick
+  - id: imu
+    path: ../target/debug/my-imu
+    phase_us: 900          # read 100 µs before the bus master's tick
 ```
 
 Two bus masters with the same period are in phase without being told. Phases
@@ -237,28 +233,33 @@ state published to its command applied (`keel trace`, end to end):
 | same cycle, the controller spinning around its states (6% of a core) | ~3–4 µs |
 | same cycle, both spinning, each pinned to a core | ~1.3 µs |
 
-On a virtual CAN bus, a command reaches `keel-can` 4–5 µs after it's sent,
-where it used to wait 950 µs for the next tick; the stand-in drive applies
-it when its frame arrives. In lockstep, the simulation ran 1301 simulated
-seconds in 6 s, on the same trajectory as in real time.
+On a virtual CAN bus, a command reached `keel-can` 4–5 µs after it was
+sent, where it used to wait 950 µs for the next tick. In lockstep, the
+simulation ran 1301 simulated seconds in 6 s, on the same trajectory as in
+real time. (Those were measured with the pendulum simulation and stand-in
+CAN drive that 0031 retired.)
 
 ## Examples
 
-```sh
-keel run examples/control-sim.yml         # keel-pid holding a simulated pendulum at 1 rad, at 1 kHz
-keel logs controller                      # "5s target 1: at 1.000 rad, +0.000 rad/s, pushing +4.13 N m"
-keel trace                                # state → command, end to end
-keel run examples/control-lockstep.yml    # the same in lockstep: simulated time goes by over 100× faster
-keel run examples/control-micro.yml       # the joint on a (pretend) microcontroller
+The examples are the simulated robot's ([below](#a-simulated-robot)). On a
+robot, `keel-pid` or your controller takes `keel-can`'s `state`:
+
+```yaml
+nodes:
+  - id: joints
+    path: ../target/debug/keel-can
+    args: ["--interface", "can0", "--joints", "1", "--hz", "1000"]
+    inputs:
+      command: { source: controller/command, keep: latest }
+  - id: controller
+    path: ../target/debug/keel-pid
+    args: ["--target", "1.0"]
+    inputs:
+      state: { source: joints/state, keep: latest }
 ```
 
-Behind a virtual CAN bus: in a network namespace, without root, where the
-system allows unprivileged ones, or with `sudo ip link add vcan0 type vcan &&
-sudo ip link set vcan0 up` once:
-
 ```sh
-unshare -rn sh -c 'ip link add vcan0 type vcan && ip link set vcan0 up &&
-  ./target/debug/keel run examples/control-can.yml'
+keel trace                                 # state → command, end to end
 ```
 
 ## A simulated robot

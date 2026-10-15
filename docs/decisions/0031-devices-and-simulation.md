@@ -31,8 +31,15 @@ and failures. In a simulation they share one world.
 - **A simulated robot is one node**, because its devices share a world: the
   same loops over simulated devices, on the world's clock, which steps the
   physics up to each tick (and in real time waits for the wall clock).
-- **Physics and hardware are separate.** The physics (`Physics`: MuJoCo, or
-  the pendulums) gives true values and knows nothing of sensors. A
+- **One simulation: MuJoCo.** `keel-sim` (pendulums), `keel-can-motor` (the
+  same pendulums behind a virtual CAN bus) and `keel-micro-joint` (behind a
+  pretend chip) are gone, with their examples. They were test fixtures
+  shipped as nodes, each with a physics of its own; the CAN frames keep
+  their unit tests, and a real bus or chip tests the rest better. A
+  pendulum stays, inside the tests only, to check the `Pid` and the drive
+  model without MuJoCo.
+- **Physics and hardware are separate.** The physics (`Physics`: MuJoCo)
+  gives true values and knows nothing of sensors. A
   **hardware model** stands between it and the loops: a drive model (its own
   position or velocity loop, delay, torque limit, timeout), sensor effects
   (delay, bias, drift, noise, quantization, range), camera effects
@@ -57,9 +64,12 @@ and failures. In a simulation they share one world.
   servos become plain motors, and the drive model starts from their gains.
 
 ## Consequences
-- `keel-sim` and `keel-can` are wiring over `JointLoop`; `keel-can-motor`
-  and the emulated chip use the drive model. Their behaviour didn't change:
-  same trajectories in real time, in lockstep and over a virtual CAN bus.
+- `keel-can` is wiring over `JointLoop`. Before they were retired,
+  `keel-sim`, `keel-can-motor` and the emulated chip ran over the new layers
+  with the same trajectories as before, in real time, in lockstep and over a
+  virtual CAN bus. The measurements in 0027–0029 were taken on them.
+- Without a robot, there is nothing to run `keel-can`, `keel-serial` or
+  `keel-pid` against: the examples are MuJoCo's, and need its setup.
 - The simulated Piper picks up a cube and puts it down, in real time with
   no missed deadline at 100 Hz, or in lockstep at 12× real time with three
   cameras rendering, 70× without (release build, RTX 2060). Two lockstep

@@ -1,8 +1,8 @@
 //! Simulated devices: the same kinds as real ones ([`crate::device`]),
 //! over a shared [`World`]. The world is a physics engine ([`Physics`]: true
-//! values, nothing else) and the joints' drives ([`crate::drive`]); each
-//! device reads it through its own hardware model ([`crate::model`]), so it
-//! reads, lags and breaks like the real thing.
+//! values, nothing else; MuJoCo, in `keel-mujoco`) and the joints' drives
+//! ([`crate::drive`]); each device reads it through its own hardware model
+//! ([`crate::model`]), so it reads, lags and breaks like the real thing.
 //!
 //! The devices share the world, so they run in one node, on the world's
 //! clock ([`SimClock`]): it steps the physics up to each tick, and in real
@@ -18,7 +18,6 @@ use keel::trace::now_ns;
 use crate::device::{Camera, Joints, VectorSensor};
 use crate::drive::{Drive, DriveSettings};
 use crate::model::{ImageModel, ImageSettings, VectorModel, VectorSettings};
-use crate::plant::Pendulum;
 use crate::schedule::{sleep_until, Clock};
 use crate::{Command, Format, Image, Mode, State};
 
@@ -261,57 +260,10 @@ impl Camera for SimCamera {
     }
 }
 
-/// The simplest physics there is: a pendulum per joint (see
-/// [`crate::plant`]). No sensors, no cameras.
-pub struct Pendulums {
-    plants: Vec<Pendulum>,
-    torques: Vec<f64>,
-    time: u64,
-    timestep: u64,
-}
-
-impl Pendulums {
-    pub fn new(joints: usize, timestep_ns: u64) -> Pendulums {
-        Pendulums {
-            plants: vec![Pendulum::default(); joints],
-            torques: vec![0.0; joints],
-            time: 0,
-            timestep: timestep_ns,
-        }
-    }
-}
-
-impl Physics for Pendulums {
-    fn time_ns(&self) -> u64 {
-        self.time
-    }
-
-    fn timestep_ns(&self) -> u64 {
-        self.timestep
-    }
-
-    fn joints(&self) -> usize {
-        self.plants.len()
-    }
-
-    fn joint(&self, i: usize) -> State {
-        self.plants[i].state()
-    }
-
-    fn set_torque(&mut self, i: usize, torque: f64) {
-        self.torques[i] = torque;
-    }
-
-    fn step(&mut self) {
-        let dt = self.timestep as f64 / 1e9;
-        self.plants.iter_mut().zip(&self.torques).for_each(|(p, &t)| p.step(t, dt));
-        self.time += self.timestep;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Pendulums;
 
     /// A position command through the simulated joints: the drive model
     /// holds the pendulum there, and the encoder reads it.

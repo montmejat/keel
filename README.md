@@ -41,7 +41,7 @@ in [docs/architecture.md](docs/architecture.md), and every decision has a
 | Provisioning | install over SSH, or a machine that is only keel; is it fit for a robot? | `keel provision` · `keel image` · `keel doctor` | [machines](docs/machines.md) |
 | Deployment | builds named by hash, history, branches, fleets | `keel deploy` · `keel rollback` · `keel branch` · `keel fleet` | [deployment](docs/deployment.md) |
 | Runtime | transport, lifecycle, real time, phases | `keel run` · `keel stop` · `keel update` | [dataflow](docs/dataflow.md) |
-| Control | joints, sensors, cameras, controllers, CAN, simulation, lockstep, microcontrollers | `keel-pid` · `keel-sim` · `keel-can` | [control](docs/control.md) |
+| Control | joints, sensors, cameras, controllers, CAN, microcontrollers | `keel-pid` · `keel-can` · `keel-serial` | [control](docs/control.md) |
 | Simulation | a robot arm in MuJoCo: joints, IMU, force sensor and cameras with a hardware model, parts that break, a pick-and-place | `keel-mujoco` · `examples/mujoco-arm.yml` | [decision 0031](docs/decisions/0031-devices-and-simulation.md) |
 | Observability | tracing, recording, replay, a flight recorder | `keel top` · `keel trace` · `keel replay` | [observability](docs/observability.md) |
 | Agent | an agent looks at a running dataflow and says what is wrong, read-only | `keel-mcp` · `examples/agent/run.sh` | [decision 0030](docs/decisions/0030-agent-tools.md) |

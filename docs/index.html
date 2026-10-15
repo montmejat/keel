@@ -151,7 +151,7 @@
     <p class="lede">keel is a learning project. It asks how a whole robotics stack fits together when each layer is the smallest thing that works, and writes every decision down.</p>
     <div class="layers">
       <div class="layer"><b>Runtime</b><span>Programs exchange messages through shared memory without copying them. Restart policies, a watchdog, and real-time scheduling come from the dataflow file.<code>keel run · keel stop · keel update</code></span></div>
-      <div class="layer"><b>Control</b><span>Joints, controllers and a simulator, with a loop closed inside its own 1 ms cycle. Talks to motors over CAN, and to microcontrollers.<code>keel-pid · keel-sim · keel-can</code></span></div>
+      <div class="layer"><b>Control</b><span>Joints, controllers and a simulated robot in MuJoCo, with a loop closed inside its own 1 ms cycle. Talks to motors over CAN, and to microcontrollers.<code>keel-pid · keel-can · keel-mujoco</code></span></div>
       <div class="layer"><b>Observability</b><span>Every message is stamped and traced across machines. Record it, replay it, or keep a flight recorder that saves when something fails.<code>keel top · keel trace · keel replay</code></span></div>
       <div class="layer"><b>Deployment</b><span>Builds named by their hash, with history, rollback, branches and fleets.<code>keel deploy · keel rollback · keel fleet</code></span></div>
       <div class="layer"><b>Provisioning</b><span>Set up a machine over SSH, or boot one whose only program is keel. Check that it is fit for a robot.<code>keel provision · keel image · keel doctor</code></span></div>

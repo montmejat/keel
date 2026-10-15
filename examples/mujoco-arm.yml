@@ -10,7 +10,7 @@
 #   ls /tmp/keel-frames             # wrist, wrist_depth, overview
 #
 # mujoco-lockstep.yml runs it as fast as the machine allows;
-# mujoco-broken.yml breaks a part.
+# KEEL_BREAK=joint2:dead@10 breaks a part.
 nodes:
   - id: sim
     path: ../target/debug/keel-mujoco

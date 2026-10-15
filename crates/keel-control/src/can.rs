@@ -141,7 +141,7 @@ pub fn as_state(frame: &Frame, joints: usize) -> Option<(usize, State)> {
 }
 
 /// Joints on a bus: what their drives last reported, and commands to them.
-/// The drives `keel-can-motor` plays close every loop themselves.
+/// The drives close every loop themselves.
 pub struct CanJoints {
     bus: Bus,
     states: Vec<State>,

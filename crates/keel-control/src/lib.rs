@@ -33,9 +33,10 @@ pub mod device;
 pub mod drive;
 pub mod law;
 pub mod model;
-pub mod plant;
 pub mod schedule;
 pub mod sim;
+#[cfg(test)]
+mod testing;
 
 use std::io;
 use std::str::FromStr;
@@ -242,7 +243,7 @@ pub fn arg<T: FromStr>(name: &str, default: T) -> io::Result<T> {
 mod tests {
     use super::*;
     use crate::law::Pid;
-    use crate::plant::Pendulum;
+    use crate::testing::Pendulum;
 
     #[test]
     fn payloads_round_trip() {

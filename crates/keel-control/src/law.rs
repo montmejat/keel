@@ -74,7 +74,7 @@ impl Pid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plant::Pendulum;
+    use crate::testing::Pendulum;
 
     #[test]
     fn velocity_loop_spins_the_pendulum() {

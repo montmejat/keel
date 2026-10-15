@@ -5,8 +5,7 @@
 //! take effect late, a limit on its torque, letting go when commands stop
 //! coming, and breaking down.
 //!
-//! The same model plays a simulated arm's drives ([`crate::sim`]) and the
-//! drives at the far end of a virtual CAN bus (`keel-can-motor`).
+//! It plays a simulated robot's drives ([`crate::sim`]).
 
 use std::collections::VecDeque;
 use std::io;
@@ -83,7 +82,7 @@ impl Drive {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plant::Pendulum;
+    use crate::testing::Pendulum;
 
     const MS: u64 = 1_000_000;
 
