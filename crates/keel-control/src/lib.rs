@@ -6,6 +6,11 @@
 //! `keel-can` (joints on a CAN bus) both do, so a controller runs against
 //! either unchanged, and swapping them is a change to the dataflow file.
 //!
+//! Inside such a node, a driver is only what its joints need ([`joints::Joints`]:
+//! read, write, start, stop), and one loop runs any of them
+//! ([`joints::JointLoop`]): [`can::CanJoints`], [`damiao::DamiaoJoints`],
+//! [`plant::Pendulums`].
+//!
 //! keel's payloads are raw bytes; this crate gives two of them a layout: one
 //! [`State`] or [`Command`] per joint, back to back, little-endian. Their
 //! time is in keel's header, not here: a state's stamp is when its joints
@@ -17,6 +22,7 @@
 pub mod can;
 pub mod cycle;
 pub mod damiao;
+pub mod joints;
 pub mod pid;
 pub mod plant;
 

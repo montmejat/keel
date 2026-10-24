@@ -37,3 +37,4 @@ Superseded records stay, with a link to what replaced them.
 | [0029](0029-phases.md) | Phases: periodic loops tick on the clock's grid | Proposed |
 | [0030](0030-agent-tools.md) | An agent looks through the control API, and only looks | Proposed |
 | [0031](0031-mit-commands-and-damiao.md) | Commands are MIT commands, and keel-can speaks Damiao's motors | Proposed |
+| [0032](0032-a-loop-for-any-joints.md) | A driver is what its joints need; one loop runs any of them | Proposed |

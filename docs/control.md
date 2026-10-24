@@ -115,6 +115,32 @@ keel trace
 
 On a real OpenArm, `--interface can0`; nothing else changes.
 
+## Writing a driver
+
+A node behind which there are joints is a driver and the joints' loop. The
+driver implements `Joints`: what its joints need and nothing else.
+
+```rust
+impl Joints for MyArm {
+    fn count(&self) -> usize { 6 }
+    fn start(&mut self) -> io::Result<()> { /* modes, enable */ Ok(()) }
+    /// Every joint's state and the moment it describes, once there's a whole one.
+    fn read(&mut self, states: &mut [State]) -> io::Result<Option<u64>> { … }
+    /// This cycle's commands, the newest there are (`None` before the first).
+    fn write(&mut self, commands: Option<&[Command]>, states: &[State]) -> io::Result<()> { … }
+    fn stop(&mut self) -> io::Result<()> { /* disable */ Ok(()) }
+}
+
+JointLoop::new(MyArm::open()?, Settings::from_args()?, &node)?.run(&mut node)
+```
+
+`JointLoop` is the rest, the same for every driver: the tick, publishing
+the state, waiting for the command within the cycle, writing it every cycle
+(the previous one again when the controller is late), the log lines for late
+commands and silent joints, and `stop` however the loop ends. `keel-can`
+runs `CanJoints` (made-up drives) or `DamiaoJoints`; `keel-sim` runs
+`Pendulums` ([0032](decisions/0032-a-loop-for-any-joints.md)).
+
 ## On a microcontroller
 
 `keel-micro` is the node API for a chip: `no_std`, no allocation, no

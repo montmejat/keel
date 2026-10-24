@@ -16,7 +16,16 @@
 //!   it rather than assumed.
 //!
 //! Classic CAN or CAN FD: the frames are 8 bytes either way.
+//!
+//! [`DamiaoJoints`] is a bus of them as joints, for `keel-can`.
 
+use std::io;
+use std::time::{Duration, Instant};
+
+use keel::trace::now_ns;
+
+use crate::can::{Bus, Frame};
+use crate::joints::Joints;
 use crate::{Command, State};
 
 /// Where register requests go, for every motor on the bus.
@@ -155,6 +164,179 @@ pub fn register_answer(d: &[u8; 8]) -> Option<(u32, u8, [u8; 4])> {
     matches!(d[2], READ | WRITE).then(|| (u16::from_le_bytes([d[0], d[1]]) as u32, d[3], [d[4], d[5], d[6], d[7]]))
 }
 
+/// How long a motor has to answer a register request at start.
+const REGISTER_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Damiao's motors on a bus, as joints, in MIT mode: the command as it is,
+/// the loop closing on the motors.
+///
+/// At start, each is put in MIT mode, its ranges are read from its
+/// registers, and it's enabled; at stop, it's disabled. The motors speak
+/// only when spoken to: each cycle's round of frames brings their answers,
+/// which are the next state, stamped with when the round went out. Before
+/// the first command, the round asks for feedback without commanding
+/// anything.
+pub struct DamiaoJoints {
+    bus: Bus,
+    interface: String,
+    fd: bool,
+    motors: Vec<Motor>,
+    fresh: Vec<bool>,
+    /// When the last round went out.
+    round_ns: u64,
+}
+
+struct Motor {
+    id: u32,
+    /// The id it answers on.
+    master: u32,
+    limits: Limits,
+    status: Option<u8>,
+}
+
+impl DamiaoJoints {
+    /// `motors`: each motor's CAN id and the id it answers on, in joint
+    /// order; `fd`: whether they're on CAN FD.
+    pub fn open(interface: &str, motors: &[(u32, u32)], fd: bool) -> io::Result<Self> {
+        if motors.is_empty() {
+            return Err(io::Error::other("no motors"));
+        }
+        let bus = if fd { Bus::open_fd(interface)? } else { Bus::open(interface)? };
+        let motors: Vec<Motor> = motors
+            .iter()
+            .map(|&(id, master)| Motor { id, master, limits: Limits { p: 1.0, v: 1.0, t: 1.0 }, status: None })
+            .collect();
+        let fresh = vec![false; motors.len()];
+        Ok(Self { bus, interface: interface.into(), fd, motors, fresh, round_ns: now_ns() })
+    }
+
+    /// `0x01:0x11,0x02:0x12`: each motor's id and the id it answers on.
+    pub fn parse_motors(motors: &str) -> io::Result<Vec<(u32, u32)>> {
+        let id = |s: &str| {
+            let s = s.trim();
+            match s.strip_prefix("0x") {
+                Some(hex) => u32::from_str_radix(hex, 16),
+                None => s.parse(),
+            }
+            .map_err(|_| io::Error::other(format!("--motors: {s:?} isn't an id")))
+        };
+        motors
+            .split(',')
+            .filter(|m| !m.trim().is_empty())
+            .map(|m| {
+                let (a, b) =
+                    m.split_once(':').ok_or_else(|| io::Error::other(format!("--motors: {m:?} isn't id:master_id")))?;
+                Ok((id(a)?, id(b)?))
+            })
+            .collect()
+    }
+
+    fn frame(&self, id: u32, data: [u8; 8]) -> Frame {
+        Frame::new(id, &data).fd(self.fd)
+    }
+
+    /// Sends a register request for motor `i`, and waits for its answer.
+    fn ask(&self, i: usize, request: [u8; 8]) -> io::Result<[u8; 4]> {
+        let m = &self.motors[i];
+        self.bus.send(&self.frame(REGISTER_ID, request))?;
+        let until = Instant::now() + REGISTER_TIMEOUT;
+        while let Some(left) = until.checked_duration_since(Instant::now()) {
+            if !self.bus.wait(left)? {
+                continue;
+            }
+            while let Some(frame) = self.bus.try_recv()? {
+                let answer = frame.eight().filter(|_| frame.id == m.master).and_then(|d| register_answer(&d));
+                if let Some((id, rid, value)) = answer {
+                    if id == m.id && rid == request[3] {
+                        return Ok(value);
+                    }
+                }
+            }
+        }
+        Err(io::Error::other(format!(
+            "motor {:#04x} doesn't answer on `{}` (its answers should come on {:#04x}{})",
+            m.id,
+            self.interface,
+            m.master,
+            if self.fd { ", in CAN FD" } else { "" }
+        )))
+    }
+}
+
+impl Joints for DamiaoJoints {
+    fn count(&self) -> usize {
+        self.motors.len()
+    }
+
+    /// Each motor in MIT mode, its ranges read, then enabled: one request at
+    /// a time, nothing else on the bus.
+    fn start(&mut self) -> io::Result<()> {
+        for i in 0..self.motors.len() {
+            let id = self.motors[i].id;
+            let mode =
+                u32::from_le_bytes(self.ask(i, write_register(id, reg::CTRL_MODE, reg::MIT_MODE.to_le_bytes()))?);
+            if mode != reg::MIT_MODE {
+                return Err(io::Error::other(format!(
+                    "motor {id:#04x} stays in mode {mode}: keel speaks MIT mode ({})",
+                    reg::MIT_MODE
+                )));
+            }
+            let range =
+                |rid| -> io::Result<f64> { Ok(f32::from_le_bytes(self.ask(i, read_register(id, rid))?) as f64) };
+            let limits = Limits { p: range(reg::PMAX)?, v: range(reg::VMAX)?, t: range(reg::TMAX)? };
+            self.motors[i].limits = limits;
+            println!(
+                "motor {id:#04x}: MIT mode, ±{} rad, ±{} rad/s, ±{} N m, answering on {:#04x}",
+                limits.p, limits.v, limits.t, self.motors[i].master
+            );
+        }
+        for m in &self.motors {
+            self.bus.send(&self.frame(m.id, special(ENABLE)))?;
+        }
+        Ok(())
+    }
+
+    fn read(&mut self, states: &mut [State]) -> io::Result<Option<u64>> {
+        while let Some(frame) = self.bus.try_recv()? {
+            let Some(i) = self.motors.iter().position(|m| m.master == frame.id) else { continue };
+            let Some(data) = frame.eight() else { continue };
+            let m = &mut self.motors[i];
+            let f = feedback(&data, m.limits);
+            if m.status != Some(f.status) {
+                if f.status >= ERRORS || m.status.is_some() {
+                    println!("motor {:#04x}: {} ({:X})", m.id, status_name(f.status), f.status);
+                }
+                m.status = Some(f.status);
+            }
+            (states[i], self.fresh[i]) = (f.state, true);
+        }
+        if !self.fresh.iter().all(|&f| f) {
+            return Ok(None);
+        }
+        self.fresh.fill(false);
+        Ok(Some(self.round_ns))
+    }
+
+    fn write(&mut self, commands: Option<&[Command]>, _states: &[State]) -> io::Result<()> {
+        self.round_ns = now_ns();
+        for (i, m) in self.motors.iter().enumerate() {
+            let frame = match commands {
+                Some(c) => self.frame(m.id, command(&c[i], m.limits)),
+                None => self.frame(REGISTER_ID, refresh(m.id)),
+            };
+            self.bus.send(&frame)?;
+        }
+        Ok(())
+    }
+
+    fn stop(&mut self) -> io::Result<()> {
+        for m in &self.motors {
+            self.bus.send(&self.frame(m.id, special(DISABLE)))?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +361,12 @@ mod tests {
         let f = feedback(&[0x12, 0x7F, 0xFF, 0x7F, 0xF7, 0xFF, 25, 26], L);
         assert_eq!(f.status, 1);
         assert!(f.state.position.abs() < 1e-3 && f.state.velocity.abs() < 0.01 && f.torque.abs() < 0.01, "{f:?}");
+    }
+
+    #[test]
+    fn motors_parse() {
+        assert_eq!(DamiaoJoints::parse_motors("0x01:0x11, 2:18").unwrap(), [(1, 0x11), (2, 18)]);
+        assert!(DamiaoJoints::parse_motors("0x01").is_err());
     }
 
     #[test]

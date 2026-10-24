@@ -10,7 +10,10 @@ use std::ffi::CString;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
-use crate::State;
+use keel::trace::now_ns;
+
+use crate::joints::Joints;
+use crate::{Command, State};
 
 /// A frame with an 11-bit id: classic (up to 8 bytes), or CAN FD (up to 64,
 /// its data at the faster bit rate).
@@ -208,6 +211,53 @@ pub fn as_state(frame: &Frame, joints: usize) -> Option<(usize, State)> {
     let joint = frame.id.checked_sub(STATE)? as usize;
     let state = State { position: f32_at(&frame.data, 0).into(), velocity: f32_at(&frame.data, 4).into() };
     (joint < joints && frame.len == 8).then_some((joint, state))
+}
+
+/// Joints behind made-up drives (`keel-can-motor`'s): they report on their
+/// own clock and take only a torque, so a command's law is worked out here,
+/// on the latest state, once a cycle.
+pub struct CanJoints {
+    bus: Bus,
+    fresh: Vec<bool>,
+}
+
+impl CanJoints {
+    pub fn open(interface: &str, joints: usize) -> io::Result<Self> {
+        if joints > MAX_JOINTS {
+            return Err(io::Error::other(format!("a bus carries at most {MAX_JOINTS} joints")));
+        }
+        Ok(Self { bus: Bus::open(interface)?, fresh: vec![false; joints] })
+    }
+}
+
+impl Joints for CanJoints {
+    fn count(&self) -> usize {
+        self.fresh.len()
+    }
+
+    /// What the drives reported since the last read, stamped with when it
+    /// was read.
+    fn read(&mut self, states: &mut [State]) -> io::Result<Option<u64>> {
+        let read_ns = now_ns();
+        while let Some(frame) = self.bus.try_recv()? {
+            if let Some((joint, state)) = as_state(&frame, self.fresh.len()) {
+                (states[joint], self.fresh[joint]) = (state, true);
+            }
+        }
+        if !self.fresh.iter().all(|&f| f) {
+            return Ok(None);
+        }
+        self.fresh.fill(false);
+        Ok(Some(read_ns))
+    }
+
+    fn write(&mut self, commands: Option<&[Command]>, states: &[State]) -> io::Result<()> {
+        let Some(commands) = commands else { return Ok(()) };
+        for (joint, (command, state)) in commands.iter().zip(states).enumerate() {
+            self.bus.send(&command_frame(joint, command.torque(*state)))?;
+        }
+        Ok(())
+    }
 }
 
 fn f32_at(bytes: &[u8], at: usize) -> f32 {
