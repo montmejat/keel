@@ -1,0 +1,43 @@
+# OpenArm v1, seven joints and a gripper on Damiao motors, driven by keel:
+# keel-can is the bus master, speaking Damiao's MIT mode over CAN FD, and
+# openarm-wave the controller (the home pose, the first joint swinging, the
+# gripper opening and closing).
+#
+# The arm is drydock (github.com/montmejat/drydock): OpenArm's MuJoCo model
+# behind vcan0, answering as the motors would, frame for frame and as fast as
+# a real bus carries them. In drydock's repository, once:
+#
+#   examples/openarm/setup.sh
+#
+# then, before this dataflow:
+#
+#   ./target/release/drydock examples/openarm/robot.yml
+#
+# vcan0 must carry CAN FD (drydock's scripts/vcan.sh makes it so). On a real
+# OpenArm, `--interface can0`; nothing else changes.
+#
+# 500 Hz: a cycle's sixteen frames (eight commands, eight answers) keep the
+# bus 41% busy on CAN FD. At 1 kHz they'd take 82% of it; on classic CAN,
+# 500 Hz would take 96%, and 1 kHz wouldn't fit.
+nodes:
+  - id: arm
+    path: ../target/debug/keel-can
+    args:
+      - --interface
+      - vcan0
+      - --protocol
+      - damiao
+      - --fd
+      - "true"
+      - --hz
+      - "500"
+      - --motors
+      - 0x01:0x11,0x02:0x12,0x03:0x13,0x04:0x14,0x05:0x15,0x06:0x16,0x07:0x17,0x08:0x18
+    restart: on-failure
+    inputs:
+      command: { source: controller/command, keep: latest }
+
+  - id: controller
+    path: ../target/debug/openarm-wave
+    inputs:
+      state: { source: arm/state, keep: latest }

@@ -69,7 +69,8 @@ fn main() -> io::Result<()> {
             }
             misses.count(answer);
         }
-        plants.iter_mut().zip(&commands).for_each(|(plant, command)| plant.step(command.effort, dt));
+        // The drives' law, on the joints as they are.
+        plants.iter_mut().zip(&commands).for_each(|(plant, command)| plant.step(command.torque(plant.state()), dt));
         sim_ns += period.as_nanos() as u64;
     }
 }

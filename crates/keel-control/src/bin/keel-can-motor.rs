@@ -15,9 +15,9 @@ use std::time::Duration;
 use keel::periodic::{self, next_tick};
 use keel::trace::now_ns;
 use keel::{Event, Node};
+use keel_control::arg;
 use keel_control::can::{self, Bus};
 use keel_control::plant::Pendulum;
-use keel_control::{arg, Command};
 
 /// Without a command for this long, a joint's effort drops to zero.
 const COMMAND_TIMEOUT: u64 = 100_000_000;
@@ -28,11 +28,8 @@ fn main() -> io::Result<()> {
     let period = (1e9 / arg("hz", 1000.0)?) as u64;
     let bus = Bus::open(&interface)?;
     let mut node = Node::from_env()?;
-    let mut drives = Drives {
-        plants: vec![Pendulum::default(); joints],
-        commands: vec![(Command::default(), 0); joints],
-        stepped: now_ns(),
-    };
+    let mut drives =
+        Drives { plants: vec![Pendulum::default(); joints], commands: vec![(0.0, 0); joints], stepped: now_ns() };
 
     let mut tick = next_tick(now_ns(), period, periodic::phase().as_nanos() as u64);
     loop {
@@ -66,8 +63,8 @@ fn main() -> io::Result<()> {
 
 struct Drives {
     plants: Vec<Pendulum>,
-    /// Each joint's command, and when it arrived.
-    commands: Vec<(Command, u64)>,
+    /// Each joint's torque, and when it arrived.
+    commands: Vec<(f64, u64)>,
     /// How far the pendulums have been stepped.
     stepped: u64,
 }
@@ -79,8 +76,8 @@ impl Drives {
         if dt <= 0.0 {
             return;
         }
-        for (plant, (command, at)) in self.plants.iter_mut().zip(&self.commands) {
-            let effort = if t.saturating_sub(*at) < COMMAND_TIMEOUT { command.effort } else { 0.0 };
+        for (plant, (torque, at)) in self.plants.iter_mut().zip(&self.commands) {
+            let effort = if t.saturating_sub(*at) < COMMAND_TIMEOUT { *torque } else { 0.0 };
             plant.step(effort, dt);
         }
         self.stepped = t;

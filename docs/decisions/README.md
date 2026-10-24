@@ -36,3 +36,4 @@ Superseded records stay, with a link to what replaced them.
 | [0028](0028-stamps.md) | Stamps: every message says what moment it describes | Proposed |
 | [0029](0029-phases.md) | Phases: periodic loops tick on the clock's grid | Proposed |
 | [0030](0030-agent-tools.md) | An agent looks through the control API, and only looks | Proposed |
+| [0031](0031-mit-commands-and-damiao.md) | Commands are MIT commands, and keel-can speaks Damiao's motors | Proposed |

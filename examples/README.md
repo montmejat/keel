@@ -19,6 +19,7 @@ Each file's header says what it shows and what it needs. Run with
 | `control-lockstep.yml` | the same in lockstep, faster than real time |
 | `control-can.yml` | the joint behind a virtual CAN bus, a stand-in drive at the other end |
 | `control-micro.yml` | the joint on a (pretend) microcontroller |
+| `openarm.yml` | OpenArm v1 on Damiao motors, over CAN FD, against [drydock](https://github.com/montmejat/drydock)'s simulated arm |
 | `bench.yml` | round-trip latency and throughput, 64 B to 8 MiB |
 | `bench-two-machines.yml` | the same across two daemons |
 | `jitter.yml`, `jitter-rt.yml` | a 1 kHz loop's lateness, without and with real-time settings |

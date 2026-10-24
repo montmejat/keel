@@ -12,7 +12,7 @@ everything here is built with what any user of keel gets.
  ─────────────────── keel: state ⇄ command, stamped, in shared memory ───
  joints              keel-can (a bus master)   |  keel-sim (a simulation)
  ─────────────────── the wire: can0 / vcan0 ────────────────────────────
- drives              real drives               |  keel-can-motor (a stand-in)
+ drives              real drives  |  drydock (MuJoCo)  |  keel-can-motor
 ```
 
 **The dataflow is the hardware interface.** Whatever publishes `state` and
@@ -21,9 +21,11 @@ controller can't tell a simulation from a bus, or a live run from a replay
 or from a simulation in lockstep, and nothing above the joints should try
 to: swapping one for the other is a change to the dataflow file.
 
-A simulation can also sit lower, below the wire: `keel-can-motor` plays the
-drives at the other end of a virtual CAN bus, so the bus master and its
-protocol run in simulation as they would on a robot.
+A simulation can also sit lower, below the wire, so the bus master and its
+protocol run in simulation as they would on a robot:
+[drydock](https://github.com/montmejat/drydock), a separate project, plays
+Damiao's motors on a virtual bus with MuJoCo moving the robot behind them;
+`keel-can-motor` plays made-up drives on simulated pendulums.
 
 ## Messages
 
@@ -34,12 +36,20 @@ bus or simulation, back to back, little-endian:
 | message | per joint | bytes |
 |---|---|---:|
 | `State` | position (rad), velocity (rad/s), as `f64` | 16 |
-| `Command` | effort (N m), as `f64` | 8 |
+| `Command` | position (rad), velocity (rad/s), kp (N m/rad), kd (N m s/rad), effort (N m), as `f64` | 40 |
 
 ```rust
 for state in State::read(&data) { /* state.position, state.velocity */ }
 node.send_with("command", n * Command::LEN, |p| Command::write(&commands, p))?;
 ```
+
+A command asks for the torque `kp (position − θ) + kd (velocity − θ̇) +
+effort`: the MIT mode of quasi-direct-drive motors
+([0031](decisions/0031-mit-commands-and-damiao.md)). Whoever drives the joint
+closes that loop: a Damiao motor many times a cycle, `keel-sim` every step,
+`keel-can` once a cycle for drives that take only a torque. A plain torque is
+`Command::effort(τ)`, `kp = kd = 0`: what a controller closing its own loop,
+like `keel-pid`, sends.
 
 Every message also carries, in keel's header, a **stamp**: the moment of the
 world it describes ([0028](decisions/0028-stamps.md)). A state's stamp is
@@ -51,12 +61,59 @@ stamp of the state it answers.
 | node | what it is | flags |
 |---|---|---|
 | `keel-sim` | pendulums, stepped each tick | `--joints 1 --hz 1000 --cycle same\|next\|lockstep --deadline-us 300 --spin-us 0` |
-| `keel-can` | a cyclic bus master over SocketCAN | `--interface can0 --joints 1 --hz 1000 --cycle same\|next --deadline-us 300 --spin-us 0` |
+| `keel-can` | a cyclic bus master over SocketCAN | `--interface can0 --protocol made-up\|damiao --joints 1 --motors 0x01:0x11,… --fd false --hz 1000 --cycle same\|next --deadline-us 300 --spin-us 0` |
 | `keel-can-motor` | the drives at the other end of a (virtual) bus | `--interface vcan0 --joints 1 --hz 1000` |
 | `keel-pid` | a PID per joint, a command for each state | `--target 1.0 --kp 40 --ki 40 --kd 4 --limit 10 --spin-us 0 --period-us 0` |
 
-The CAN frames are made up (a command frame and a state frame per joint):
-a real drive's protocol replaces them in `keel-can`.
+`keel-can` speaks two protocols. `made-up`: a torque frame and a state frame
+per joint, `keel-can-motor`'s. `damiao`: Damiao's motors in MIT mode, below.
+
+## Damiao's motors
+
+`keel-can --protocol damiao --motors 0x01:0x11,0x02:0x12 --fd true`: each
+motor's CAN id and the id it answers on, in joint order, on CAN FD or
+classic CAN.
+
+- **At start**, each motor is put in MIT mode, its ranges are read from its
+  registers, and it's enabled. A motor that doesn't answer stops the node
+  with its id. **At stop**, they're disabled.
+- **Each cycle, one round of frames**: a command to each motor, as soon as
+  the controller answers, or the previous one again at the deadline. The
+  motors answer each frame with their state, and those answers are the next
+  cycle's `state`, stamped with when the round went out.
+- **A motor's errors** (overheating, communication lost…) and changes of
+  state go to the log, once each.
+
+The frames are 8 bytes, classic or CAN FD; what CAN FD changes is their time
+on the wire, at 1 Mbit/s with the data at 5 (OpenArm's settings):
+
+| a cycle of 8 motors (8 commands, 8 answers) | classic | CAN FD |
+|---|---:|---:|
+| time on the bus | 1.8–2.2 ms | 0.8–0.9 ms |
+| at 500 Hz | 90–110% | ~41% |
+| at 1 kHz | doesn't fit | ~82% |
+
+### OpenArm, in simulation
+
+`examples/openarm.yml`: OpenArm v1's seven joints and gripper, with
+`openarm-wave` holding the home pose, swinging the first joint and working
+the gripper. The arm is drydock, on `vcan0`; in drydock's repository:
+
+```sh
+examples/openarm/setup.sh                              # OpenArm's model, once
+./target/release/drydock examples/openarm/robot.yml    # the arm
+```
+
+then here:
+
+```sh
+keel run examples/openarm.yml
+keel logs arm             # "motor 0x03: MIT mode, ±12.5 rad, ±10 rad/s, ±28 N m, answering on 0x13"
+keel logs controller      # "3.0s joints at -0.40 -0.00 -0.00 +1.64 -0.00 -0.00 +0.06 -1.03 rad"
+keel trace
+```
+
+On a real OpenArm, `--interface can0`; nothing else changes.
 
 ## On a microcontroller
 
@@ -185,6 +242,11 @@ state published to its command applied (`keel trace`, end to end):
 | same cycle, the controller spinning around its states (6% of a core) | ~3–4 µs |
 | same cycle, both spinning, each pinned to a core | ~1.3 µs |
 
+OpenArm against drydock, CAN FD, no real-time settings: at 500 Hz, state to
+command 15–40 µs end to end, 3 commands in 500 past the 300 µs deadline, the
+bus 41% busy; at 1 kHz, 83% busy (82% predicted), and about 5% of cycles
+without a whole state, the answers crossing just before the next tick.
+
 On a virtual CAN bus, a command reaches `keel-can` 4–5 µs after it's sent,
 where it used to wait 950 µs for the next tick; the stand-in drive applies
 it when its frame arrives. In lockstep, the simulation ran 1301 simulated
@@ -198,6 +260,7 @@ keel logs controller                      # "5s target 1: at 1.000 rad, +0.000 r
 keel trace                                # state → command, end to end
 keel run examples/control-lockstep.yml    # the same in lockstep: simulated time goes by over 100× faster
 keel run examples/control-micro.yml       # the joint on a (pretend) microcontroller
+keel run examples/openarm.yml             # OpenArm on Damiao motors, against drydock (above)
 ```
 
 Behind a virtual CAN bus: in a network namespace, without root, where the
@@ -211,16 +274,15 @@ unshare -rn sh -c 'ip link add vcan0 type vcan && ip link set vcan0 up &&
 
 ## Not yet
 
-- **Commands the drives take**: position, velocity, stiffness, damping and
-  torque (the MIT mode of quasi-direct-drive motors), and their protocol
-  over CAN-FD, in place of the made-up frames.
-- **A fresh state from request/response drives**: drives that answer each
-  command with their state report one taken a cycle ago. A state request
-  just before the tick (a phase) fixes it.
+- **A fresher state from drives that answer**: the state published at a
+  tick is what the previous round's answers said. A second round within the
+  cycle would shorten it, at twice the bus load.
+- **Joint units for what isn't a joint's motor**: OpenArm's gripper is a
+  motor's angle, not the fingers' opening. A transmission in `keel-can`, or
+  the controller's business.
 - **Several buses, one controller**: two arms, two masters in phase, and a
   controller that waits for both states of a cycle.
-- **A simulation worth the name**: MuJoCo behind the virtual bus, and
-  cameras rendered into shared memory.
+- **Cameras**, rendered by a simulation into shared memory.
 - **Slow loops**: a policy every Nth cycle, and an interpolator playing its
   actions back by their stamps.
 - **The age of a command** in `keel trace`: from its stamp to its sending.

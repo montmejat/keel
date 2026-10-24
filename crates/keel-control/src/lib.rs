@@ -16,6 +16,7 @@
 
 pub mod can;
 pub mod cycle;
+pub mod damiao;
 pub mod pid;
 pub mod plant;
 
@@ -46,22 +47,57 @@ impl State {
     }
 }
 
-/// What a joint is asked for: a torque, in newton metres.
+/// What a joint is asked for, as the drives of quasi-direct-drive motors
+/// take it (their MIT mode): the torque
+/// `kp (position − θ) + kd (velocity − θ̇) + effort`, in newton metres, where
+/// `θ` and `θ̇` are the joint's as it is.
+///
+/// Whoever drives the joint closes that loop: a drive, many times a cycle,
+/// or keel's side of the bus once a cycle for drives that only take a
+/// torque. A plain torque is `kp = kd = 0`, which is what [`Command::effort`]
+/// makes, and what a controller closing its own loop sends.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Command {
+    /// rad
+    pub position: f64,
+    /// rad/s
+    pub velocity: f64,
+    /// N m/rad
+    pub kp: f64,
+    /// N m s/rad
+    pub kd: f64,
+    /// N m
     pub effort: f64,
 }
 
 impl Command {
-    pub const LEN: usize = 8;
+    pub const LEN: usize = 40;
+
+    /// A plain torque.
+    pub fn effort(effort: f64) -> Self {
+        Command { effort, ..Default::default() }
+    }
+
+    /// The torque it asks for, the joint being at `state`.
+    pub fn torque(&self, state: State) -> f64 {
+        self.kp * (self.position - state.position) + self.kd * (self.velocity - state.velocity) + self.effort
+    }
 
     pub fn read(payload: &[u8]) -> impl Iterator<Item = Command> + '_ {
-        payload.chunks_exact(Self::LEN).map(|b| Command { effort: f64_at(b, 0) })
+        payload.chunks_exact(Self::LEN).map(|b| Command {
+            position: f64_at(b, 0),
+            velocity: f64_at(b, 8),
+            kp: f64_at(b, 16),
+            kd: f64_at(b, 24),
+            effort: f64_at(b, 32),
+        })
     }
 
     pub fn write(commands: &[Command], payload: &mut [u8]) {
-        for (command, b) in commands.iter().zip(payload.chunks_exact_mut(Self::LEN)) {
-            b.copy_from_slice(&command.effort.to_le_bytes());
+        for (c, b) in commands.iter().zip(payload.chunks_exact_mut(Self::LEN)) {
+            for (i, x) in [c.position, c.velocity, c.kp, c.kd, c.effort].iter().enumerate() {
+                b[i * 8..i * 8 + 8].copy_from_slice(&x.to_le_bytes());
+            }
         }
     }
 }
@@ -95,10 +131,19 @@ mod tests {
         State::write(&states, &mut payload);
         assert_eq!(State::read(&payload).collect::<Vec<_>>(), states);
 
-        let commands = [Command { effort: 4.0 }, Command { effort: -0.5 }];
+        let commands =
+            [Command::effort(4.0), Command { position: 1.0, velocity: -2.0, kp: 30.0, kd: 1.5, effort: -0.5 }];
         let mut payload = [0; 2 * Command::LEN];
         Command::write(&commands, &mut payload);
         assert_eq!(Command::read(&payload).collect::<Vec<_>>(), commands);
+    }
+
+    #[test]
+    fn a_command_asks_for_the_mit_law() {
+        let c = Command { position: 1.0, velocity: 0.5, kp: 10.0, kd: 2.0, effort: 0.25 };
+        let state = State { position: 0.75, velocity: 1.0 };
+        assert!((c.torque(state) - (10.0 * 0.25 + 2.0 * -0.5 + 0.25)).abs() < 1e-12);
+        assert_eq!(Command::effort(3.0).torque(state), 3.0);
     }
 
     /// The default gains hold the pendulum at an angle, against gravity,

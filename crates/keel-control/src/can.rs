@@ -1,60 +1,121 @@
 //! A CAN bus, through the kernel's SocketCAN: a raw socket bound to an
-//! interface (`can0`, or the virtual `vcan0`), exchanging 16-byte frames.
+//! interface (`can0`, or the virtual `vcan0`), exchanging classic frames, and
+//! CAN FD frames if asked to.
 //!
-//! Also the frames `keel-can` speaks, in the absence of a real drive to
-//! follow: a state frame per joint from the drive, a command frame per joint
-//! to it.
+//! Also the made-up frames `keel-can` speaks to `keel-can-motor`: a state
+//! frame per joint from the drive, a torque frame per joint to it. Real
+//! drives' frames are elsewhere (`damiao`).
 
 use std::ffi::CString;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
-use crate::{Command, State};
+use crate::State;
 
-/// A classic CAN frame: an 11-bit id and up to 8 bytes.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// A frame with an 11-bit id: classic (up to 8 bytes), or CAN FD (up to 64,
+/// its data at the faster bit rate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Frame {
     pub id: u32,
     pub len: u8,
-    pub data: [u8; 8],
+    pub data: [u8; 64],
+    pub fd: bool,
 }
 
-/// The kernel's `struct can_frame`.
+impl Frame {
+    /// A classic frame of `data.len()` bytes, 8 at most.
+    pub fn new(id: u32, data: &[u8]) -> Self {
+        let mut all = [0; 64];
+        let len = data.len().min(8);
+        all[..len].copy_from_slice(&data[..len]);
+        Self { id, len: len as u8, data: all, fd: false }
+    }
+
+    /// The same frame, as CAN FD or classic.
+    pub fn fd(self, fd: bool) -> Self {
+        Self { fd, ..self }
+    }
+
+    /// Its data, when it's 8 bytes long.
+    pub fn eight(&self) -> Option<[u8; 8]> {
+        (self.len == 8).then(|| self.data[..8].try_into().unwrap())
+    }
+}
+
+/// The kernel's `struct canfd_frame`; a `struct can_frame` is its first 16
+/// bytes.
 #[repr(C)]
-#[derive(Default)]
 struct RawFrame {
     id: u32,
     len: u8,
-    _pad: [u8; 3],
-    data: [u8; 8],
+    flags: u8,
+    _reserved: [u8; 2],
+    data: [u8; 64],
 }
 
-const RAW_LEN: usize = std::mem::size_of::<RawFrame>();
+const CAN_MTU: usize = 16;
+const CANFD_MTU: usize = std::mem::size_of::<RawFrame>();
+/// A CAN FD frame's data at the faster bit rate.
+const CANFD_BRS: u8 = 0x01;
+/// Extended ids, remote requests and error frames.
+const NOT_DATA_FRAME: u32 = 0x8000_0000 | 0x4000_0000 | 0x2000_0000;
+const SOL_CAN_RAW: libc::c_int = libc::SOL_CAN_BASE + libc::CAN_RAW;
+const CAN_RAW_FD_FRAMES: libc::c_int = 5;
 
 pub struct Bus {
     socket: OwnedFd,
 }
 
 impl Bus {
+    /// A socket for classic frames.
     pub fn open(interface: &str) -> io::Result<Self> {
+        Self::open_with(interface, false)
+    }
+
+    /// A socket for classic and CAN FD frames: the interface must carry
+    /// CAN FD.
+    pub fn open_fd(interface: &str) -> io::Result<Self> {
+        Self::open_with(interface, true)
+    }
+
+    fn open_with(interface: &str, fd: bool) -> io::Result<Self> {
         let name = CString::new(interface)?;
-        // SAFETY: plain syscalls on a socket we own, with an address that
-        // lives through the call.
+        // SAFETY: plain syscalls on a socket we own, with arguments that
+        // live through each call.
         unsafe {
             let index = libc::if_nametoindex(name.as_ptr());
             if index == 0 {
                 return Err(io::Error::other(format!("no CAN interface `{interface}`")));
             }
-            let fd = libc::socket(libc::PF_CAN, libc::SOCK_RAW | libc::SOCK_CLOEXEC, libc::CAN_RAW);
-            if fd < 0 {
+            let raw = libc::socket(libc::PF_CAN, libc::SOCK_RAW | libc::SOCK_CLOEXEC, libc::CAN_RAW);
+            if raw < 0 {
                 return Err(io::Error::last_os_error());
             }
-            let socket = OwnedFd::from_raw_fd(fd);
+            let socket = OwnedFd::from_raw_fd(raw);
+            if fd {
+                let mut ifr: libc::ifreq = std::mem::zeroed();
+                for (dst, &src) in ifr.ifr_name.iter_mut().zip(name.as_bytes()) {
+                    *dst = src as libc::c_char;
+                }
+                if libc::ioctl(raw, libc::SIOCGIFMTU, &mut ifr) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if ifr.ifr_ifru.ifru_mtu as usize != CANFD_MTU {
+                    return Err(io::Error::other(format!(
+                        "`{interface}` doesn't carry CAN FD frames (its MTU isn't 72)"
+                    )));
+                }
+                let on: libc::c_int = 1;
+                let size = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+                if libc::setsockopt(raw, SOL_CAN_RAW, CAN_RAW_FD_FRAMES, (&raw const on).cast(), size) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
             let mut address: libc::sockaddr_can = std::mem::zeroed();
             address.can_family = libc::AF_CAN as _;
             address.can_ifindex = index as _;
             let len = std::mem::size_of::<libc::sockaddr_can>() as libc::socklen_t;
-            if libc::bind(fd, (&raw const address).cast(), len) < 0 {
+            if libc::bind(raw, (&raw const address).cast(), len) < 0 {
                 return Err(io::Error::last_os_error());
             }
             Ok(Self { socket })
@@ -62,28 +123,43 @@ impl Bus {
     }
 
     pub fn send(&self, frame: &Frame) -> io::Result<()> {
-        let raw = RawFrame { id: frame.id, len: frame.len.min(8), data: frame.data, ..Default::default() };
-        // SAFETY: `raw` is `RAW_LEN` readable bytes.
-        let sent = unsafe { libc::write(self.socket.as_raw_fd(), (&raw const raw).cast(), RAW_LEN) };
+        let (len, size, flags) = match frame.fd {
+            true => (frame.len.min(64), CANFD_MTU, CANFD_BRS),
+            false => (frame.len.min(8), CAN_MTU, 0),
+        };
+        let raw = RawFrame { id: frame.id, len, flags, _reserved: [0; 2], data: frame.data };
+        // SAFETY: `raw` has at least `size` readable bytes.
+        let sent = unsafe { libc::write(self.socket.as_raw_fd(), (&raw const raw).cast(), size) };
         match sent {
-            n if n == RAW_LEN as isize => Ok(()),
+            n if n == size as isize => Ok(()),
             _ => Err(io::Error::last_os_error()),
         }
     }
 
-    /// The next frame if one is waiting. Frames this socket sent don't come
-    /// back to it.
+    /// The next data frame if one is waiting. Frames this socket sent don't
+    /// come back to it; CAN FD frames come only to a socket opened for them.
     pub fn try_recv(&self) -> io::Result<Option<Frame>> {
-        let mut raw = RawFrame::default();
-        // SAFETY: `raw` is `RAW_LEN` writable bytes, and any bytes are a
-        // valid `RawFrame`.
-        let got = unsafe { libc::recv(self.socket.as_raw_fd(), (&raw mut raw).cast(), RAW_LEN, libc::MSG_DONTWAIT) };
-        match got {
-            n if n == RAW_LEN as isize => Ok(Some(Frame { id: raw.id, len: raw.len.min(8), data: raw.data })),
-            _ => match io::Error::last_os_error() {
-                e if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
-                e => Err(e),
-            },
+        loop {
+            let mut raw = RawFrame { id: 0, len: 0, flags: 0, _reserved: [0; 2], data: [0; 64] };
+            // SAFETY: `raw` is `CANFD_MTU` writable bytes, and any bytes are
+            // a valid `RawFrame`.
+            let got =
+                unsafe { libc::recv(self.socket.as_raw_fd(), (&raw mut raw).cast(), CANFD_MTU, libc::MSG_DONTWAIT) };
+            let fd = match got {
+                n if n == CAN_MTU as isize => false,
+                n if n == CANFD_MTU as isize => true,
+                n if n >= 0 => continue,
+                _ => {
+                    return match io::Error::last_os_error() {
+                        e if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
+                        e => Err(e),
+                    }
+                }
+            };
+            if raw.id & NOT_DATA_FRAME != 0 {
+                continue;
+            }
+            return Ok(Some(Frame { id: raw.id, len: raw.len.min(if fd { 64 } else { 8 }), data: raw.data, fd }));
         }
     }
 
@@ -103,31 +179,29 @@ impl Bus {
     }
 }
 
-/// Command for joint `n`: id `COMMAND + n`, the effort as an `f32`.
+/// Torque for joint `n`: id `COMMAND + n`, as an `f32`.
 pub const COMMAND: u32 = 0x100;
 /// State of joint `n`: id `STATE + n`, position then velocity as `f32`s.
 pub const STATE: u32 = 0x180;
 /// Joints a bus can carry before the two id ranges meet.
 pub const MAX_JOINTS: usize = (STATE - COMMAND) as usize;
 
-pub fn command_frame(joint: usize, command: Command) -> Frame {
-    let mut data = [0; 8];
-    data[..4].copy_from_slice(&(command.effort as f32).to_le_bytes());
-    Frame { id: COMMAND + joint as u32, len: 4, data }
+pub fn command_frame(joint: usize, effort: f64) -> Frame {
+    Frame::new(COMMAND + joint as u32, &(effort as f32).to_le_bytes())
 }
 
 pub fn state_frame(joint: usize, state: State) -> Frame {
     let mut data = [0; 8];
     data[..4].copy_from_slice(&(state.position as f32).to_le_bytes());
     data[4..].copy_from_slice(&(state.velocity as f32).to_le_bytes());
-    Frame { id: STATE + joint as u32, len: 8, data }
+    Frame::new(STATE + joint as u32, &data)
 }
 
-/// The joint and command a frame carries, if it's a command for one of
+/// The joint and torque a frame carries, if it's a torque for one of
 /// `joints` joints.
-pub fn as_command(frame: &Frame, joints: usize) -> Option<(usize, Command)> {
+pub fn as_command(frame: &Frame, joints: usize) -> Option<(usize, f64)> {
     let joint = frame.id.checked_sub(COMMAND)? as usize;
-    (joint < joints && frame.len == 4).then(|| (joint, Command { effort: f32_at(&frame.data, 0).into() }))
+    (joint < joints && frame.len == 4).then(|| (joint, f32_at(&frame.data, 0).into()))
 }
 
 pub fn as_state(frame: &Frame, joints: usize) -> Option<(usize, State)> {
@@ -150,8 +224,7 @@ mod tests {
         assert_eq!(as_state(&state_frame(2, state), 3), Some((2, state)));
         assert_eq!(as_state(&state_frame(2, state), 2), None, "no such joint");
         assert_eq!(as_command(&state_frame(2, state), 3), None, "not a command");
-        let command = Command { effort: -4.0 };
-        assert_eq!(as_command(&command_frame(0, command), 1), Some((0, command)));
+        assert_eq!(as_command(&command_frame(0, -4.0), 1), Some((0, -4.0)));
     }
 
     /// Needs a `vcan0`; without root:
@@ -159,12 +232,16 @@ mod tests {
     #[test]
     #[ignore]
     fn frames_cross_a_bus() {
-        let (a, b) = (Bus::open("vcan0").unwrap(), Bus::open("vcan0").unwrap());
+        let (a, b) = (Bus::open("vcan0").unwrap(), Bus::open_fd("vcan0").unwrap());
         assert!(b.try_recv().unwrap().is_none());
         let frame = state_frame(1, State { position: 0.5, velocity: 2.0 });
         a.send(&frame).unwrap();
         assert_eq!(b.try_recv().unwrap(), Some(frame));
         assert!(a.try_recv().unwrap().is_none(), "not its own");
+        // CAN FD: to a socket opened for it, not to the classic one.
+        let fd = Frame::new(0x01, &[1, 2, 3, 4, 5, 6, 7, 8]).fd(true);
+        b.send(&fd).unwrap();
+        assert!(a.try_recv().unwrap().is_none());
         assert!(Bus::open("nope0").is_err());
     }
 }
