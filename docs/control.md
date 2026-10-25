@@ -140,8 +140,9 @@ stamps. The thresholds are flags of the joints node (`--names`,
 7.0s not following: joint 4 (openarm_joint4)
 ```
 
-In `examples/openarm.yml`, `keel logs arm` shows them. drydock breaks motors on purpose
-(`--break openarm_joint4:dead@5`, `weak`, `freeze`), and
+In `examples/openarm.yml`, `keel logs arm` shows them. drydock breaks motors on purpose,
+as a scenario says (`examples/openarm/elbow-dies.scenario.yml` in drydock:
+`dead`, `weak`, `freeze`, `noisy`, at set times or at random), and
 `examples/agent/run.sh openarm-dead | openarm-weak | openarm-freeze |
 openarm-healthy` asks an agent, with `keel-mcp`'s tools only, whether
 anything is wrong with the arm, and grades the answer: which joint, what
