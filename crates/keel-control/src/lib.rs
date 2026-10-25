@@ -8,7 +8,7 @@
 //!
 //! Inside such a node, a driver is only what its joints need ([`joints::Joints`]:
 //! read, write, start, stop), and one loop runs any of them
-//! ([`joints::JointLoop`]): [`can::CanJoints`], [`damiao::DamiaoJoints`],
+//! ([`joints::JointLoop`]): [`damiao::DamiaoJoints`],
 //! [`plant::Pendulums`].
 //!
 //! keel's payloads are raw bytes; this crate gives two of them a layout: one

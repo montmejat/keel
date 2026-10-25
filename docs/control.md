@@ -12,7 +12,7 @@ everything here is built with what any user of keel gets.
  ─────────────────── keel: state ⇄ command, stamped, in shared memory ───
  joints              keel-can (a bus master)   |  keel-sim (a simulation)
  ─────────────────── the wire: can0 / vcan0 ────────────────────────────
- drives              real drives  |  drydock (MuJoCo)  |  keel-can-motor
+ drives              real drives               |  drydock (MuJoCo)
 ```
 
 **The dataflow is the hardware interface.** Whatever publishes `state` and
@@ -24,8 +24,7 @@ to: swapping one for the other is a change to the dataflow file.
 A simulation can also sit lower, below the wire, so the bus master and its
 protocol run in simulation as they would on a robot:
 [drydock](https://github.com/montmejat/drydock), a separate project, plays
-Damiao's motors on a virtual bus with MuJoCo moving the robot behind them;
-`keel-can-motor` plays made-up drives on simulated pendulums.
+Damiao's motors on a virtual bus with MuJoCo moving the robot behind them.
 
 ## Messages
 
@@ -61,12 +60,8 @@ stamp of the state it answers.
 | node | what it is | flags |
 |---|---|---|
 | `keel-sim` | pendulums, stepped each tick | `--joints 1 --hz 1000 --cycle same\|next\|lockstep --deadline-us 300 --spin-us 0` |
-| `keel-can` | a cyclic bus master over SocketCAN | `--interface can0 --protocol made-up\|damiao --joints 1 --motors 0x01:0x11,… --fd false --hz 1000 --cycle same\|next --deadline-us 300 --spin-us 0 --names a,b` |
-| `keel-can-motor` | the drives at the other end of a (virtual) bus | `--interface vcan0 --joints 1 --hz 1000` |
+| `keel-can` | Damiao's motors on a CAN bus: a cyclic bus master over SocketCAN | `--interface can0 --motors 0x01:0x11,… --fd false --hz 1000 --cycle same\|next --deadline-us 300 --spin-us 0 --names a,b` |
 | `keel-pid` | a PID per joint, a command for each state | `--target 1.0 --kp 40 --ki 40 --kd 4 --limit 10 --spin-us 0 --period-us 0` |
-
-`keel-can` speaks two protocols. `made-up`: a torque frame and a state frame
-per joint, `keel-can-motor`'s. `damiao`: Damiao's motors in MIT mode, below.
 
 ## Damiao's motors
 
@@ -186,8 +181,7 @@ dataflow, the loop.
 the state, waiting for the command within the cycle, writing it every cycle
 (the previous one again when the controller is late), the log lines for late
 commands and silent joints, and `stop` however the loop ends. `keel-can`
-runs `CanJoints` (made-up drives) or `DamiaoJoints`; `keel-sim` runs
-`Pendulums` ([0032](decisions/0032-a-loop-for-any-joints.md)).
+runs `DamiaoJoints`; `keel-sim` runs `Pendulums` ([0032](decisions/0032-a-loop-for-any-joints.md)).
 
 ## On a microcontroller
 
@@ -251,9 +245,9 @@ tick of a 1 ms one. `phase_us` in the dataflow moves a node along its
 period:
 
 ```yaml
-  - id: motor
-    path: ../target/debug/keel-can-motor
-    phase_us: 900          # report 100 µs before the bus master's tick
+  - id: camera
+    path: ../target/debug/camera
+    phase_us: 900          # 100 µs before the 1 ms loops' tick
 ```
 
 Two bus masters with the same period are in phase without being told. Phases
@@ -321,10 +315,8 @@ command 15–40 µs end to end, 3 commands in 500 past the 300 µs deadline, the
 bus 41% busy; at 1 kHz, 83% busy (82% predicted), and about 5% of cycles
 without a whole state, the answers crossing just before the next tick.
 
-On a virtual CAN bus, a command reaches `keel-can` 4–5 µs after it's sent,
-where it used to wait 950 µs for the next tick; the stand-in drive applies
-it when its frame arrives. In lockstep, the simulation ran 1301 simulated
-seconds in 6 s, on the same trajectory as in real time.
+In lockstep, the simulation ran 1301 simulated seconds in 6 s, on the same
+trajectory as in real time.
 
 ## Examples
 
@@ -335,15 +327,6 @@ keel trace                                # state → command, end to end
 keel run examples/control-lockstep.yml    # the same in lockstep: simulated time goes by over 100× faster
 keel run examples/control-micro.yml       # the joint on a (pretend) microcontroller
 keel run examples/openarm.yml             # OpenArm on Damiao motors, against drydock (above)
-```
-
-Behind a virtual CAN bus: in a network namespace, without root, where the
-system allows unprivileged ones, or with `sudo ip link add vcan0 type vcan &&
-sudo ip link set vcan0 up` once:
-
-```sh
-unshare -rn sh -c 'ip link add vcan0 type vcan && ip link set vcan0 up &&
-  ./target/debug/keel run examples/control-can.yml'
 ```
 
 ## Not yet

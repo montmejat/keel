@@ -23,8 +23,6 @@ nodes:
     args:
       - --interface
       - vcan0
-      - --protocol
-      - damiao
       - --fd
       - "true"
       - --hz

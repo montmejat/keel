@@ -1,19 +1,11 @@
 //! A CAN bus, through the kernel's SocketCAN: a raw socket bound to an
 //! interface (`can0`, or the virtual `vcan0`), exchanging classic frames, and
-//! CAN FD frames if asked to.
-//!
-//! Also the made-up frames `keel-can` speaks to `keel-can-motor`: a state
-//! frame per joint from the drive, a torque frame per joint to it. Real
-//! drives' frames are elsewhere (`damiao`).
+//! CAN FD frames if asked to. What the frames mean is the drives' protocol's
+//! (`damiao`).
 
 use std::ffi::CString;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-
-use keel::trace::now_ns;
-
-use crate::joints::Joints;
-use crate::{Command, State};
 
 /// A frame with an 11-bit id: classic (up to 8 bytes), or CAN FD (up to 64,
 /// its data at the faster bit rate).
@@ -205,108 +197,9 @@ fn make(interface: &str, fd: bool) -> String {
     }
 }
 
-/// Torque for joint `n`: id `COMMAND + n`, as an `f32`.
-pub const COMMAND: u32 = 0x100;
-/// State of joint `n`: id `STATE + n`, position then velocity as `f32`s.
-pub const STATE: u32 = 0x180;
-/// Joints a bus can carry before the two id ranges meet.
-pub const MAX_JOINTS: usize = (STATE - COMMAND) as usize;
-
-pub fn command_frame(joint: usize, effort: f64) -> Frame {
-    Frame::new(COMMAND + joint as u32, &(effort as f32).to_le_bytes())
-}
-
-pub fn state_frame(joint: usize, state: State) -> Frame {
-    let mut data = [0; 8];
-    data[..4].copy_from_slice(&(state.position as f32).to_le_bytes());
-    data[4..].copy_from_slice(&(state.velocity as f32).to_le_bytes());
-    Frame::new(STATE + joint as u32, &data)
-}
-
-/// The joint and torque a frame carries, if it's a torque for one of
-/// `joints` joints.
-pub fn as_command(frame: &Frame, joints: usize) -> Option<(usize, f64)> {
-    let joint = frame.id.checked_sub(COMMAND)? as usize;
-    (joint < joints && frame.len == 4).then(|| (joint, f32_at(&frame.data, 0).into()))
-}
-
-pub fn as_state(frame: &Frame, joints: usize) -> Option<(usize, State)> {
-    let joint = frame.id.checked_sub(STATE)? as usize;
-    let state = State {
-        position: f32_at(&frame.data, 0).into(),
-        velocity: f32_at(&frame.data, 4).into(),
-        ..Default::default()
-    };
-    (joint < joints && frame.len == 8).then_some((joint, state))
-}
-
-/// Joints behind made-up drives (`keel-can-motor`'s): they report on their
-/// own clock and take only a torque, so a command's law is worked out here,
-/// on the latest state, once a cycle. Their frames don't carry the torque
-/// they give, so a state's effort is the torque last sent.
-pub struct CanJoints {
-    bus: Bus,
-    fresh: Vec<bool>,
-    sent: Vec<f64>,
-}
-
-impl CanJoints {
-    pub fn open(interface: &str, joints: usize) -> io::Result<Self> {
-        if joints > MAX_JOINTS {
-            return Err(io::Error::other(format!("a bus carries at most {MAX_JOINTS} joints")));
-        }
-        Ok(Self { bus: Bus::open(interface)?, fresh: vec![false; joints], sent: vec![0.0; joints] })
-    }
-}
-
-impl Joints for CanJoints {
-    fn count(&self) -> usize {
-        self.fresh.len()
-    }
-
-    /// What the drives reported since the last read, stamped with when it
-    /// was read.
-    fn read(&mut self, states: &mut [State]) -> io::Result<Option<u64>> {
-        let read_ns = now_ns();
-        while let Some(frame) = self.bus.try_recv()? {
-            if let Some((joint, state)) = as_state(&frame, self.fresh.len()) {
-                let state = State { effort: self.sent[joint], ..state };
-                (states[joint], self.fresh[joint]) = (state, true);
-            }
-        }
-        if !self.fresh.iter().all(|&f| f) {
-            return Ok(None);
-        }
-        self.fresh.fill(false);
-        Ok(Some(read_ns))
-    }
-
-    fn write(&mut self, commands: Option<&[Command]>, states: &[State]) -> io::Result<()> {
-        let Some(commands) = commands else { return Ok(()) };
-        for (joint, (command, state)) in commands.iter().zip(states).enumerate() {
-            self.sent[joint] = command.torque(*state);
-            self.bus.send(&command_frame(joint, self.sent[joint]))?;
-        }
-        Ok(())
-    }
-}
-
-fn f32_at(bytes: &[u8], at: usize) -> f32 {
-    f32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn frames_round_trip() {
-        let state = State { position: 1.5, velocity: -0.25, ..Default::default() };
-        assert_eq!(as_state(&state_frame(2, state), 3), Some((2, state)));
-        assert_eq!(as_state(&state_frame(2, state), 2), None, "no such joint");
-        assert_eq!(as_command(&state_frame(2, state), 3), None, "not a command");
-        assert_eq!(as_command(&command_frame(0, -4.0), 1), Some((0, -4.0)));
-    }
 
     /// Needs a `vcan0`; without root:
     /// `unshare -rn sh -c 'ip link add vcan0 type vcan && ip link set vcan0 up && cargo test -p keel-control -- --ignored'`
@@ -315,7 +208,7 @@ mod tests {
     fn frames_cross_a_bus() {
         let (a, b) = (Bus::open("vcan0").unwrap(), Bus::open_fd("vcan0").unwrap());
         assert!(b.try_recv().unwrap().is_none());
-        let frame = state_frame(1, State { position: 0.5, velocity: 2.0, ..Default::default() });
+        let frame = Frame::new(0x11, &[1, 2, 3, 4, 5, 6, 7, 8]);
         a.send(&frame).unwrap();
         assert_eq!(b.try_recv().unwrap(), Some(frame));
         assert!(a.try_recv().unwrap().is_none(), "not its own");
