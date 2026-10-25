@@ -45,7 +45,9 @@ pub fn run(listen: &str, pid: Option<u32>) -> io::Result<()> {
     let listener = TcpListener::bind(listen)?;
     let addr = listener.local_addr()?;
     if !addr.ip().is_loopback() {
-        eprintln!("keel web: {addr} is not a loopback address: anyone who can reach it and has the token can act as you");
+        eprintln!(
+            "keel web: {addr} is not a loopback address: anyone who can reach it and has the token can act as you"
+        );
     }
     let server = Arc::new(Server { token: new_token()?, addr, pid });
     println!("keel web: http://{addr}/#{}", server.token);
@@ -180,7 +182,11 @@ fn serve(mut stream: TcpStream, server: &Server) -> io::Result<()> {
         false => request.query.iter().find(|(k, _)| k == "token").map(|(_, v)| v.clone()),
     };
     if !token.is_some_and(|t| same(&t, &server.token)) {
-        return json_reply(&mut stream, "401 Unauthorized", json!({"error": "open the URL `keel web` printed, token included"}));
+        return json_reply(
+            &mut stream,
+            "401 Unauthorized",
+            json!({"error": "open the URL `keel web` printed, token included"}),
+        );
     }
     if !acting && request.method != "GET" {
         return json_reply(&mut stream, "405 Method Not Allowed", json!({"error": "method not allowed"}));

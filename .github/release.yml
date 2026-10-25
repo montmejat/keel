@@ -1,0 +1,13 @@
+# Release notes, written by GitHub from the pull requests merged since the
+# last release, grouped by label. A pull request's title is its line in the
+# notes: write it for someone upgrading.
+changelog:
+  categories:
+    - title: Breaking changes
+      labels: [breaking]
+    - title: New
+      labels: [feature]
+    - title: Fixes
+      labels: [fix]
+    - title: Other changes
+      labels: ["*"]

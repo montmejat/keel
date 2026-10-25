@@ -90,12 +90,16 @@ const MIN_INTERVAL_MS: u64 = 50;
 pub enum Reply {
     Hello(Hello),
     /// The connection is a stream now, sampled every `interval_ms`.
-    Subscribed { interval_ms: u64 },
+    Subscribed {
+        interval_ms: u64,
+    },
     /// The node was killed and starts again.
     Restarted(String),
     /// An agent's request is waiting for a human: `Request::Actions` shows it
     /// by this id.
-    Pending { id: u64 },
+    Pending {
+        id: u64,
+    },
     Actions(Vec<ActionRecord>),
     /// The action was dropped.
     Denied,
@@ -386,7 +390,10 @@ impl Actions {
             asked_ms: self.now_ms(),
             decided_ms: None,
         };
-        eprintln!("[daemon] {client} asks to {} (action {id}): `keel approve {id}` or `keel deny {id}`", record.summary);
+        eprintln!(
+            "[daemon] {client} asks to {} (action {id}): `keel approve {id}` or `keel deny {id}`",
+            record.summary
+        );
         list.1.push((record, Some(request)));
         let decided = list.1.iter().filter(|(r, _)| r.state != ActionState::Pending).count();
         if decided > KEEP_DECIDED {
@@ -759,8 +766,8 @@ pub fn pick(pid: Option<u32>) -> Result<u32, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn status() -> Status {
         Status {
