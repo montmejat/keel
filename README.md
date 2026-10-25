@@ -17,6 +17,7 @@
 
 <p align="center">
   <a href="https://montmejat.github.io/keel/"><b>Website</b></a> ·
+  <a href="https://montmejat.github.io/keel-book/"><b>Book</b></a> ·
   <a href="#the-stack">Stack</a> ·
   <a href="#try-it">Try it</a> ·
   <a href="#docs">Docs</a> ·
@@ -68,7 +69,8 @@ two machines, a fleet, a flight recorder, the benchmarks.
 
 | | |
 |---|---|
-| [website](https://montmejat.github.io/keel/) | the architecture as diagrams, and where the time goes, animated |
+| [website](https://montmejat.github.io/keel/) | what keel is, in a page |
+| [book](https://montmejat.github.io/keel-book/) | keel and drydock, how each works and how they fit together, with a recorded run played back frame by frame ([montmejat/keel-book](https://github.com/montmejat/keel-book)) |
 | [architecture](docs/architecture.md) | the design, the milestones, the benchmarks |
 | [dataflow](docs/dataflow.md) | the dataflow file, field by field, and the lifecycle |
 | [protocol](docs/protocol.md) | the control protocol tools use to look at and act on a daemon |

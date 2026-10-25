@@ -4,18 +4,31 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>keel</title>
+<script>
+  // Light, dark, or as the system says, kept for next time.
+  try { const t = localStorage.getItem('keel-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <meta name="description" content="A whole robotics middleware stack in about 10,000 lines of Rust.">
 <style>
   :root {
     --bg: #fbfbfa; --fg: #151515; --muted: #6e6e6a; --line: #e8e8e5;
     --accent: #0b4f7a; --surface: #f2f2ef; --shadow: 0 1px 2px rgb(0 0 0 / .04), 0 12px 40px rgb(0 0 0 / .08);
   }
+  /* Dark when the system is, or when the switch says so. */
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --bg: #0d0d0e; --fg: #f1f1ef; --muted: #8f8f8a; --line: #242426;
       --accent: #7cc0ea; --surface: #151517; --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 12px 40px rgb(0 0 0 / .5);
+      color-scheme: dark;
     }
   }
+  :root[data-theme="dark"] {
+      --bg: #0d0d0e; --fg: #f1f1ef; --muted: #8f8f8a; --line: #242426;
+      --accent: #7cc0ea; --surface: #151517; --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 12px 40px rgb(0 0 0 / .5);
+    color-scheme: dark;
+  }
+  .theme { margin-left: 28px; padding: 3px 12px; border-radius: 999px; border: 1px solid var(--line); background: none; color: var(--muted); font: inherit; font-size: 0.85rem; cursor: pointer; }
+  .theme:hover { color: var(--fg); border-color: var(--muted); }
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
   body {
@@ -122,7 +135,9 @@
       <a href="#inside">What's inside</a>
       <a href="#speed">Speed</a>
       <a href="#docs">Docs</a>
+      <a href="https://montmejat.github.io/keel-book/">Book</a>
       <a href="https://github.com/montmejat/keel">GitHub</a>
+      <button class="theme" id="theme" type="button">Auto</button>
     </nav>
   </header>
 
@@ -244,6 +259,21 @@
 </div>
 
 <script>
+// The theme switch: Auto, Light, Dark.
+(() => {
+  const root = document.documentElement, button = document.getElementById('theme');
+  const order = ['auto', 'light', 'dark'], names = { auto: 'Auto', light: 'Light', dark: 'Dark' };
+  const current = () => root.dataset.theme || 'auto';
+  const label = () => { button.textContent = names[current()]; button.setAttribute('aria-label', `Theme: ${names[current()]}. Change it`); };
+  label();
+  button.addEventListener('click', () => {
+    const next = order[(order.indexOf(current()) + 1) % order.length];
+    if (next === 'auto') delete root.dataset.theme; else root.dataset.theme = next;
+    try { localStorage.setItem('keel-theme', next); } catch (e) {}
+    label();
+  });
+})();
+
   // Log-scale bars: width follows log10(value), so a 1000x gap stays readable.
   function bars(id, rows) {
     var el = document.getElementById(id);

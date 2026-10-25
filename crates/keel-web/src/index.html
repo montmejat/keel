@@ -4,18 +4,30 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>keel</title>
+<script>
+  // Light, dark, or as the system says, kept for next time.
+  try { const t = localStorage.getItem('keel-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <style>
   :root {
     --bg: #fbfbfa; --fg: #151515; --muted: #6e6e6a; --line: #e8e8e5; --surface: #f2f2ef; --card: #fff;
     --accent: #0b4f7a; --ok: #2a9d5c; --warn: #c98a12; --bad: #cf3a3a; --idle: #a3a39d;
     --shadow: 0 1px 2px rgb(0 0 0 / .04), 0 8px 24px rgb(0 0 0 / .05);
   }
+  /* Dark when the system is, or when the switch says so. */
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --bg: #0d0d0e; --fg: #f1f1ef; --muted: #8f8f8a; --line: #242426; --surface: #151517; --card: #121214;
       --accent: #7cc0ea; --ok: #45c07d; --warn: #e0a93a; --bad: #ef6b6b; --idle: #5c5c58;
       --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 8px 24px rgb(0 0 0 / .4);
+      color-scheme: dark;
     }
+  }
+  :root[data-theme="dark"] {
+      --bg: #0d0d0e; --fg: #f1f1ef; --muted: #8f8f8a; --line: #242426; --surface: #151517; --card: #121214;
+      --accent: #7cc0ea; --ok: #45c07d; --warn: #e0a93a; --bad: #ef6b6b; --idle: #5c5c58;
+      --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 8px 24px rgb(0 0 0 / .4);
+    color-scheme: dark;
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
@@ -102,6 +114,7 @@
   <span class="spacer"></span>
   <span class="pill" id="uptime"></span>
   <span class="pill"><span class="dot" id="conn"></span><span id="connText">connecting</span></span>
+  <button class="btn" id="theme" type="button">Auto</button>
   <button class="btn danger" id="stop" hidden>Stop dataflow</button>
 </header>
 
@@ -128,6 +141,21 @@
 </main>
 
 <script>
+// The theme switch: Auto, Light, Dark.
+(() => {
+  const root = document.documentElement, button = document.getElementById('theme');
+  const order = ['auto', 'light', 'dark'], names = { auto: 'Auto', light: 'Light', dark: 'Dark' };
+  const current = () => root.dataset.theme || 'auto';
+  const label = () => { button.textContent = names[current()]; button.setAttribute('aria-label', `Theme: ${names[current()]}. Change it`); };
+  label();
+  button.addEventListener('click', () => {
+    const next = order[(order.indexOf(current()) + 1) % order.length];
+    if (next === 'auto') delete root.dataset.theme; else root.dataset.theme = next;
+    try { localStorage.setItem('keel-theme', next); } catch (e) {}
+    label();
+  });
+})();
+
 (function () {
   'use strict';
   var token = decodeURIComponent(location.hash.slice(1));
