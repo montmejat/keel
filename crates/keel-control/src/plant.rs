@@ -23,10 +23,11 @@ impl Pendulum {
         self.state
     }
 
-    /// Advances by `dt` seconds under `effort` N m. Semi-implicit Euler:
-    /// stable at the step sizes a control loop runs at.
+    /// Advances by `dt` seconds under `effort` N m, which its state reports.
+    /// Semi-implicit Euler: stable at the step sizes a control loop runs at.
     pub fn step(&mut self, effort: f64, dt: f64) {
-        let State { position, velocity } = &mut self.state;
+        self.state.effort = effort;
+        let State { position, velocity, .. } = &mut self.state;
         let torque = effort - DAMPING * *velocity - MASS * GRAVITY * LENGTH * position.sin();
         *velocity += torque / (MASS * LENGTH * LENGTH) * dt;
         *position += *velocity * dt;

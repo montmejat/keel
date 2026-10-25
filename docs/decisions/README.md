@@ -38,3 +38,4 @@ Superseded records stay, with a link to what replaced them.
 | [0030](0030-agent-tools.md) | An agent looks through the control API, and only looks | Proposed |
 | [0031](0031-mit-commands-and-damiao.md) | Commands are MIT commands, and keel-can speaks Damiao's motors | Proposed |
 | [0032](0032-a-loop-for-any-joints.md) | A driver is what its joints need; one loop runs any of them | Proposed |
+| [0033](0033-joints-say-what-is-wrong.md) | Joints say their torque and what's wrong with them, in their state and their node's log | Proposed |

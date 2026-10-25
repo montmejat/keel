@@ -22,6 +22,7 @@
 pub mod can;
 pub mod cycle;
 pub mod damiao;
+pub mod health;
 pub mod joints;
 pub mod pid;
 pub mod plant;
@@ -32,24 +33,73 @@ use std::str::FromStr;
 /// What a joint reports: radians, and radians per second.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct State {
+    /// rad
     pub position: f64,
+    /// rad/s
     pub velocity: f64,
+    /// The torque the drive gives, N m, as it measures it: what tells a
+    /// joint that isn't pushed from one pushed as hard as it can be.
+    pub effort: f64,
+    /// What's wrong with it, if anything: what its drive says, and what the
+    /// joints' loop sees.
+    pub status: Status,
 }
 
 impl State {
-    pub const LEN: usize = 16;
+    pub const LEN: usize = 32;
 
     /// The joints of a `state` payload.
     pub fn read(payload: &[u8]) -> impl Iterator<Item = State> + '_ {
-        payload.chunks_exact(Self::LEN).map(|b| State { position: f64_at(b, 0), velocity: f64_at(b, 8) })
+        payload.chunks_exact(Self::LEN).map(|b| State {
+            position: f64_at(b, 0),
+            velocity: f64_at(b, 8),
+            effort: f64_at(b, 16),
+            status: Status { flags: u32_at(b, 24), drive: u32_at(b, 28) },
+        })
     }
 
     /// Fills a `state` payload of `states.len() * State::LEN` bytes.
     pub fn write(states: &[State], payload: &mut [u8]) {
         for (state, b) in states.iter().zip(payload.chunks_exact_mut(Self::LEN)) {
             b[..8].copy_from_slice(&state.position.to_le_bytes());
-            b[8..].copy_from_slice(&state.velocity.to_le_bytes());
+            b[8..16].copy_from_slice(&state.velocity.to_le_bytes());
+            b[16..24].copy_from_slice(&state.effort.to_le_bytes());
+            b[24..28].copy_from_slice(&state.status.flags.to_le_bytes());
+            b[28..].copy_from_slice(&state.status.drive.to_le_bytes());
         }
+    }
+}
+
+/// What's wrong with a joint, if anything. `flags` say what, from the drive
+/// (an error, not enabled) and from the joints' loop, which compares what
+/// the joint is told with what it does (see [`health`]); `drive` is the
+/// drive's own status code, as its maker numbers it (Damiao's: 0 disabled,
+/// 1 enabled, 8 and up errors), or 0 when it has none to give.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Status {
+    pub flags: u32,
+    pub drive: u32,
+}
+
+impl Status {
+    /// The drive reports an error; its code is in `drive`.
+    pub const DRIVE_ERROR: u32 = 1 << 0;
+    /// The drive isn't enabled: it holds no torque.
+    pub const DISABLED: u32 = 1 << 1;
+    /// It gives far less torque than its command asks.
+    pub const UNDERPOWERED: u32 = 1 << 2;
+    /// It stays far from its target.
+    pub const BEHIND: u32 = 1 << 3;
+    /// Its reading doesn't change while its target moves.
+    pub const FROZEN: u32 = 1 << 4;
+
+    /// Nothing wrong that anyone could see.
+    pub fn ok(&self) -> bool {
+        self.flags == 0
+    }
+
+    pub fn has(&self, flag: u32) -> bool {
+        self.flags & flag != 0
     }
 }
 
@@ -108,6 +158,10 @@ impl Command {
     }
 }
 
+fn u32_at(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+
 fn f64_at(bytes: &[u8], at: usize) -> f64 {
     f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
 }
@@ -132,7 +186,11 @@ mod tests {
 
     #[test]
     fn payloads_round_trip() {
-        let states = [State { position: 1.5, velocity: -0.25 }, State { position: -3.0, velocity: 8.0 }];
+        let broken = Status { flags: Status::DRIVE_ERROR | Status::BEHIND, drive: 0xD };
+        let states = [
+            State { position: 1.5, velocity: -0.25, effort: 2.0, status: Status::default() },
+            State { position: -3.0, velocity: 8.0, effort: 0.0, status: broken },
+        ];
         let mut payload = [0; 2 * State::LEN];
         State::write(&states, &mut payload);
         assert_eq!(State::read(&payload).collect::<Vec<_>>(), states);
@@ -147,7 +205,7 @@ mod tests {
     #[test]
     fn a_command_asks_for_the_mit_law() {
         let c = Command { position: 1.0, velocity: 0.5, kp: 10.0, kd: 2.0, effort: 0.25 };
-        let state = State { position: 0.75, velocity: 1.0 };
+        let state = State { position: 0.75, velocity: 1.0, ..Default::default() };
         assert!((c.torque(state) - (10.0 * 0.25 + 2.0 * -0.5 + 0.25)).abs() < 1e-12);
         assert_eq!(Command::effort(3.0).torque(state), 3.0);
     }

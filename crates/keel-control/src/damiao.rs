@@ -66,6 +66,18 @@ pub fn status_name(status: u8) -> &'static str {
 /// cleared.
 pub const ERRORS: u8 = 0x8;
 
+/// A Damiao status as a joint's: its code, and whether it's an error or a
+/// disabled motor.
+fn status_of(code: u8) -> crate::Status {
+    use crate::Status;
+    let flags = match code {
+        0 => Status::DISABLED,
+        c if c >= ERRORS => Status::DRIVE_ERROR,
+        _ => 0,
+    };
+    Status { flags, drive: code as u32 }
+}
+
 /// The ranges a motor packs position (rad), velocity (rad/s) and torque
 /// (N m) into.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -115,13 +127,12 @@ pub fn special(which: u8) -> [u8; 8] {
     d
 }
 
-/// What a motor says after each frame.
+/// What a motor says after each frame: its status, and its state, the torque
+/// it gives included.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Feedback {
     pub status: u8,
     pub state: State,
-    /// N m
-    pub torque: f64,
 }
 
 /// A feedback frame, if that's what it is: feedback and register answers
@@ -134,8 +145,12 @@ pub fn feedback(d: &[u8; 8], l: Limits) -> Feedback {
     let t = ((d[4] & 0xF) as u16) << 8 | d[5] as u16;
     Feedback {
         status: d[0] >> 4,
-        state: State { position: to_float(p, -l.p, l.p, 16), velocity: to_float(v, -l.v, l.v, 12) },
-        torque: to_float(t, -l.t, l.t, 12),
+        state: State {
+            position: to_float(p, -l.p, l.p, 16),
+            velocity: to_float(v, -l.v, l.v, 12),
+            effort: to_float(t, -l.t, l.t, 12),
+            status: status_of(d[0] >> 4),
+        },
     }
 }
 
@@ -410,7 +425,7 @@ mod tests {
         // Enabled, motor 2, mid-range position, velocity and torque.
         let f = feedback(&[0x12, 0x7F, 0xFF, 0x7F, 0xF7, 0xFF, 25, 26], L);
         assert_eq!(f.status, 1);
-        assert!(f.state.position.abs() < 1e-3 && f.state.velocity.abs() < 0.01 && f.torque.abs() < 0.01, "{f:?}");
+        assert!(f.state.position.abs() < 1e-3 && f.state.velocity.abs() < 0.01 && f.state.effort.abs() < 0.01, "{f:?}");
     }
 
     #[test]

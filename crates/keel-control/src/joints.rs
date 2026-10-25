@@ -5,7 +5,9 @@
 //! The loop ([`JointLoop`]) is the rest, the same for a bus master and a
 //! simulation: once a period, publish the state, wait for the command that
 //! answers it (see [`crate::cycle`]), write it; log the commands that came
-//! late and the joints that went quiet.
+//! late and the joints that went quiet. And watch each joint, what it's told
+//! against what it does ([`crate::health`]): what's wrong goes in the state's
+//! status, for whoever reads it, and in the log.
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -13,6 +15,7 @@ use std::time::{Duration, Instant};
 use keel::{Event, Node, Periodic};
 
 use crate::cycle::{self, Answer, Cycle, Misses};
+use crate::health::{self, Watch};
 use crate::{Command, State};
 
 /// Joints a loop can run: on a bus, simulated.
@@ -48,21 +51,39 @@ pub trait Joints {
 }
 
 /// How a joints' loop runs.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub hz: f64,
     pub cycle: Cycle,
     /// How long to wait for a state's answer, in [`Cycle::Same`].
     pub deadline: Duration,
+    /// When a joint isn't doing what it's told.
+    pub health: health::Settings,
+    /// What to call each joint in the log, after its number.
+    pub names: Vec<String>,
 }
 
 impl Settings {
-    /// From the command line: `--hz 1000 --cycle same --deadline-us 300`.
+    /// From the command line: `--hz 1000 --cycle same --deadline-us 300`,
+    /// and for watching the joints `--names a,b --error-rad 0.2 --ratio 0.3
+    /// --min-asked 1 --hold-s 0.5 --grace-s 2 --summary-s 5`.
     pub fn from_args() -> io::Result<Settings> {
+        let d = health::Settings::default();
+        let names: String = crate::arg("names", String::new())?;
         Ok(Settings {
             hz: crate::arg("hz", 1000.0)?,
             cycle: cycle::cycle_arg()?,
             deadline: Duration::from_micros(crate::arg("deadline-us", 300)?),
+            health: health::Settings {
+                error: crate::arg("error-rad", d.error)?,
+                ratio: crate::arg("ratio", d.ratio)?,
+                min_asked: crate::arg("min-asked", d.min_asked)?,
+                hold: crate::arg("hold-s", d.hold)?,
+                moved: d.moved,
+                grace: crate::arg("grace-s", d.grace)?,
+                summary: crate::arg("summary-s", d.summary)?,
+            },
+            names: names.split(',').map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()).collect(),
         })
     }
 }
@@ -127,7 +148,8 @@ impl<J: Joints> JointLoop<J> {
     }
 
     fn cycles(&mut self, node: &mut Node) -> io::Result<()> {
-        let Settings { hz, cycle, deadline } = self.settings;
+        let Settings { hz, cycle, deadline, .. } = self.settings;
+        let mut watch = Watch::new(self.settings.health, self.settings.names.clone());
         let n = self.joints.count();
         let (mut states, mut commands) = (vec![State::default(); n], vec![Command::default(); n]);
         // Whether the controller has sent anything yet.
@@ -148,6 +170,10 @@ impl<J: Joints> JointLoop<J> {
                 }
             }
             if let Some(stamp) = self.joints.read(&mut states)? {
+                let told = if commanded { &commands[..] } else { &[] };
+                for line in watch.observe(stamp as f64 / 1e9, &mut states, told) {
+                    println!("{line}");
+                }
                 if complained {
                     println!("the joints are back");
                 }

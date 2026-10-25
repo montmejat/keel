@@ -232,16 +232,22 @@ pub fn as_command(frame: &Frame, joints: usize) -> Option<(usize, f64)> {
 
 pub fn as_state(frame: &Frame, joints: usize) -> Option<(usize, State)> {
     let joint = frame.id.checked_sub(STATE)? as usize;
-    let state = State { position: f32_at(&frame.data, 0).into(), velocity: f32_at(&frame.data, 4).into() };
+    let state = State {
+        position: f32_at(&frame.data, 0).into(),
+        velocity: f32_at(&frame.data, 4).into(),
+        ..Default::default()
+    };
     (joint < joints && frame.len == 8).then_some((joint, state))
 }
 
 /// Joints behind made-up drives (`keel-can-motor`'s): they report on their
 /// own clock and take only a torque, so a command's law is worked out here,
-/// on the latest state, once a cycle.
+/// on the latest state, once a cycle. Their frames don't carry the torque
+/// they give, so a state's effort is the torque last sent.
 pub struct CanJoints {
     bus: Bus,
     fresh: Vec<bool>,
+    sent: Vec<f64>,
 }
 
 impl CanJoints {
@@ -249,7 +255,7 @@ impl CanJoints {
         if joints > MAX_JOINTS {
             return Err(io::Error::other(format!("a bus carries at most {MAX_JOINTS} joints")));
         }
-        Ok(Self { bus: Bus::open(interface)?, fresh: vec![false; joints] })
+        Ok(Self { bus: Bus::open(interface)?, fresh: vec![false; joints], sent: vec![0.0; joints] })
     }
 }
 
@@ -264,6 +270,7 @@ impl Joints for CanJoints {
         let read_ns = now_ns();
         while let Some(frame) = self.bus.try_recv()? {
             if let Some((joint, state)) = as_state(&frame, self.fresh.len()) {
+                let state = State { effort: self.sent[joint], ..state };
                 (states[joint], self.fresh[joint]) = (state, true);
             }
         }
@@ -277,7 +284,8 @@ impl Joints for CanJoints {
     fn write(&mut self, commands: Option<&[Command]>, states: &[State]) -> io::Result<()> {
         let Some(commands) = commands else { return Ok(()) };
         for (joint, (command, state)) in commands.iter().zip(states).enumerate() {
-            self.bus.send(&command_frame(joint, command.torque(*state)))?;
+            self.sent[joint] = command.torque(*state);
+            self.bus.send(&command_frame(joint, self.sent[joint]))?;
         }
         Ok(())
     }
@@ -293,7 +301,7 @@ mod tests {
 
     #[test]
     fn frames_round_trip() {
-        let state = State { position: 1.5, velocity: -0.25 };
+        let state = State { position: 1.5, velocity: -0.25, ..Default::default() };
         assert_eq!(as_state(&state_frame(2, state), 3), Some((2, state)));
         assert_eq!(as_state(&state_frame(2, state), 2), None, "no such joint");
         assert_eq!(as_command(&state_frame(2, state), 3), None, "not a command");
@@ -307,7 +315,7 @@ mod tests {
     fn frames_cross_a_bus() {
         let (a, b) = (Bus::open("vcan0").unwrap(), Bus::open_fd("vcan0").unwrap());
         assert!(b.try_recv().unwrap().is_none());
-        let frame = state_frame(1, State { position: 0.5, velocity: 2.0 });
+        let frame = state_frame(1, State { position: 0.5, velocity: 2.0, ..Default::default() });
         a.send(&frame).unwrap();
         assert_eq!(b.try_recv().unwrap(), Some(frame));
         assert!(a.try_recv().unwrap().is_none(), "not its own");

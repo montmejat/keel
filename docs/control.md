@@ -35,7 +35,7 @@ bus or simulation, back to back, little-endian:
 
 | message | per joint | bytes |
 |---|---|---:|
-| `State` | position (rad), velocity (rad/s), as `f64` | 16 |
+| `State` | position (rad), velocity (rad/s), effort (N m: the torque the drive gives, as it measures it), as `f64`; then its status, two `u32`: flags (drive error, disabled, underpowered, behind, frozen) and the drive's own code | 32 |
 | `Command` | position (rad), velocity (rad/s), kp (N m/rad), kd (N m s/rad), effort (N m), as `f64` | 40 |
 
 ```rust
@@ -61,7 +61,7 @@ stamp of the state it answers.
 | node | what it is | flags |
 |---|---|---|
 | `keel-sim` | pendulums, stepped each tick | `--joints 1 --hz 1000 --cycle same\|next\|lockstep --deadline-us 300 --spin-us 0` |
-| `keel-can` | a cyclic bus master over SocketCAN | `--interface can0 --protocol made-up\|damiao --joints 1 --motors 0x01:0x11,… --fd false --hz 1000 --cycle same\|next --deadline-us 300 --spin-us 0` |
+| `keel-can` | a cyclic bus master over SocketCAN | `--interface can0 --protocol made-up\|damiao --joints 1 --motors 0x01:0x11,… --fd false --hz 1000 --cycle same\|next --deadline-us 300 --spin-us 0 --names a,b` |
 | `keel-can-motor` | the drives at the other end of a (virtual) bus | `--interface vcan0 --joints 1 --hz 1000` |
 | `keel-pid` | a PID per joint, a command for each state | `--target 1.0 --kp 40 --ki 40 --kd 4 --limit 10 --spin-us 0 --period-us 0` |
 
@@ -117,6 +117,43 @@ keel trace
 ```
 
 On a real OpenArm, `--interface can0`; nothing else changes.
+
+## Watching joints
+
+Every joints node watches its joints: the joints' loop compares each state
+it reads with the command the joint was last given (`keel_control::health`).
+When a joint, for half a second:
+
+- **gives far less torque than asked**: the command's law, on the joint as
+  it reads, asks for a torque; the drive reports giving under 30% of it;
+- **stays far from its target**: more than 0.2 rad, with a position gain;
+- **reads the same while its target moves**: a frozen sensor.
+
+the joint's `state` says so, in its status flags, for the controller and
+whatever else reads it, and the node's log says it in words, with the
+numbers, and again when it's over; with a summary every 5 s. The drive's own
+errors (Damiao's: overheating, overcurrent, communication lost…) go in the
+same status, with the drive's code, and the log. Nothing counts in the first
+2 s after the first command, while joints settle. Time is the states'
+stamps. The thresholds are flags of the joints node (`--names`,
+`--error-rad 0.2`, `--ratio 0.3`, `--min-asked 1`, `--hold-s 0.5`,
+`--grace-s 2`, `--summary-s 5`).
+
+```
+4.8s joint 4 (openarm_joint4): gives 0.0 N m of the -52.4 asked; +0.87 rad from its target (1.57)
+4.9s joint 1 (openarm_joint1): its position reads 0.160 rad, unchanged for 0.6 s, while its target went to 0.39
+7.0s not following: joint 4 (openarm_joint4)
+```
+
+In `examples/openarm.yml`, `keel logs arm` shows them. drydock breaks motors on purpose
+(`--break openarm_joint4:dead@5`, `weak`, `freeze`), and
+`examples/agent/run.sh openarm-dead | openarm-weak | openarm-freeze |
+openarm-healthy` asks an agent, with `keel-mcp`'s tools only, whether
+anything is wrong with the arm, and grades the answer: which joint, what
+kind of fault, or nothing on a healthy arm
+([0033](decisions/0033-joints-say-what-is-wrong.md)). There's no central
+watcher: each component says what's wrong with what it knows, and the agent
+reads every component's log.
 
 ## Writing a driver
 

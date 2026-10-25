@@ -19,11 +19,12 @@ Each file's header says what it shows and what it needs. Run with
 | `control-lockstep.yml` | the same in lockstep, faster than real time |
 | `control-can.yml` | the joint behind a virtual CAN bus, a stand-in drive at the other end |
 | `control-micro.yml` | the joint on a (pretend) microcontroller |
-| `openarm.yml` | OpenArm v1 on Damiao motors, over CAN FD, against [drydock](https://github.com/montmejat/drydock)'s simulated arm |
+| `openarm.yml` | OpenArm v1 on Damiao motors, over CAN FD, against [drydock](https://github.com/montmejat/drydock)'s simulated arm, its joints watched by the arm's node |
 | `bench.yml` | round-trip latency and throughput, 64 B to 8 MiB |
 | `bench-two-machines.yml` | the same across two daemons |
 | `jitter.yml`, `jitter-rt.yml` | a 1 kHz loop's lateness, without and with real-time settings |
 | `agent-slow.yml`, `agent-stall.yml`, `agent-crash.yml` | a filter that fails in one way each, for an agent to diagnose with `keel-mcp`: `agent/run.sh stall` |
+| `agent/run.sh openarm-dead` (`-weak`, `-freeze`, `-healthy`) | OpenArm against drydock with a motor broken on purpose (or not), for an agent to diagnose from what the arm's node says |
 | `agent-stall-once.yml` | a filter that stalls once, for an agent to diagnose and restart, with a person approving: `agent/run.sh stall-once` |
 | `hop.yml`, `hop-spin.yml` | one hop, one way, the receiver sleeping or spinning; `hop-floor` measures the machine without keel |
 

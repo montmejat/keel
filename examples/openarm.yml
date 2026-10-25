@@ -31,6 +31,9 @@ nodes:
       - "500"
       - --motors
       - 0x01:0x11,0x02:0x12,0x03:0x13,0x04:0x14,0x05:0x15,0x06:0x16,0x07:0x17,0x08:0x18
+      # Names for the log, where the loop says what's wrong with a joint.
+      - --names
+      - openarm_joint1,openarm_joint2,openarm_joint3,openarm_joint4,openarm_joint5,openarm_joint6,openarm_joint7,gripper
     restart: on-failure
     inputs:
       command: { source: controller/command, keep: latest }
@@ -39,3 +42,4 @@ nodes:
     path: ../target/debug/openarm-wave
     inputs:
       state: { source: arm/state, keep: latest }
+
