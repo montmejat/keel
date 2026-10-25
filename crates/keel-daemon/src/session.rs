@@ -1068,8 +1068,7 @@ impl Session {
                 Restart::OnFailure => !success,
                 Restart::Always => true,
             };
-        let restart =
-            wanted
+        let restart = wanted
             && !stopping
             && !aborted
             && !told_to_stop

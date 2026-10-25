@@ -1,0 +1,40 @@
+# On every pull request and every push to main: formatting, lints and tests,
+# then the tests that need a CAN bus, on a virtual one.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
+
+      # vcan is in linux-modules-extra on GitHub's runners, which can take
+      # minutes to install: only when it isn't there already.
+      - name: Tests on a virtual CAN bus
+        run: |
+          sudo modprobe vcan 2>/dev/null || {
+            sudo apt-get install -y -qq --no-install-recommends linux-modules-extra-$(uname -r)
+            sudo modprobe vcan
+          }
+          sudo ip link add dev vcan0 type vcan
+          sudo ip link set vcan0 mtu 72 up
+          cargo test -p keel-control -- --ignored

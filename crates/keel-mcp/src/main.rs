@@ -224,7 +224,9 @@ fn wait_for(client: &mut Client, id: u64) -> Result<String, String> {
         // Approved is said before the action runs, its outcome after: wait for both.
         match (action.state, &action.outcome) {
             (ActionState::Denied, _) => {
-                return Err(format!("A person denied it (action {id}). Don't try it again; say what you found instead."))
+                return Err(format!(
+                    "A person denied it (action {id}). Don't try it again; say what you found instead."
+                ))
             }
             (ActionState::Approved, Some(outcome)) => return Ok(format!("A person approved it, and: {outcome}")),
             _ => {}
