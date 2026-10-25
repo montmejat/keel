@@ -5,12 +5,20 @@
 //! run on a machine in use. A daemon answers the same list for its machine
 //! (`ToDaemon::Diagnose`), so `keel doctor <dataflow>` covers every machine
 //! a dataflow runs on, including those with no shell to look around in.
+//!
+//! For a dataflow on this machine, [`nodes`] also asks each node what it
+//! needs: it starts the node's program in check mode (see `keel::check`),
+//! and the node's setup, and what it reports, are the checks.
 
 use std::fs;
+use std::io::Read;
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::dataflow::{Dataflow, NodeConfig};
 use crate::store::Store;
 use crate::wire;
 
@@ -251,6 +259,88 @@ fn store() -> Check {
         }
         Err(e) => check("store", Level::Fail, format!("can't open the store: {e}: nothing can be deployed here")),
     }
+}
+
+/// How long a node's setup may take in check mode.
+const NODE_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// What each node of `dataflow` (loaded from a file in `dir`) needs on this
+/// machine, as the node itself sees it.
+pub fn nodes(dataflow: &Dataflow, dir: &Path) -> Vec<Check> {
+    dataflow.nodes.iter().flat_map(|n| node(n, dir)).collect()
+}
+
+/// One node's checks: its program is there, and its setup, run in check
+/// mode, goes well. What it reports goes under its name.
+fn node(n: &NodeConfig, dir: &Path) -> Vec<Check> {
+    let id = &n.id;
+    let Some(path) = &n.path else {
+        let build = n.build.as_deref().unwrap_or("?");
+        return vec![check(id, Level::Ok, format!("built from `{build}` when the dataflow runs"))];
+    };
+    let program = dir.join(path);
+    if !program.is_file() {
+        return vec![check(id, Level::Fail, format!("no program at {}: build it first", program.display()))];
+    }
+    let started = Command::new(&program)
+        .args(&n.args)
+        .env(keel::check::ENV, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let mut child = match started {
+        Ok(child) => child,
+        Err(e) => return vec![check(id, Level::Fail, format!("can't run {}: {e}", program.display()))],
+    };
+    let until = Instant::now() + NODE_CHECK_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let (mut out, mut err) = (String::new(), String::new());
+    child.stdout.take().map(|mut s| s.read_to_string(&mut out));
+    child.stderr.take().map(|mut s| s.read_to_string(&mut err));
+    let mut checks: Vec<Check> = out
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.strip_prefix(keel::check::PREFIX)?.strip_prefix('\t')?.splitn(3, '\t');
+            let level = match fields.next()? {
+                "ok" => Level::Ok,
+                "warn" => Level::Warn,
+                _ => Level::Fail,
+            };
+            Some(check(&format!("{id}: {}", fields.next()?), level, fields.next().unwrap_or("").to_owned()))
+        })
+        .collect();
+    match status {
+        Some(s) if s.success() => {
+            if checks.is_empty() {
+                checks.push(check(id, Level::Ok, "ready".into()));
+            }
+        }
+        Some(s) => {
+            let said: Vec<&str> = err.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+            let detail = match said.last() {
+                Some(last) => last.to_string(),
+                None => format!("its setup failed ({s})"),
+            };
+            checks.push(check(id, Level::Fail, detail));
+        }
+        None => checks.push(check(
+            id,
+            Level::Fail,
+            format!("its setup didn't finish in {NODE_CHECK_TIMEOUT:?}: does it join the dataflow (`Node::from_env`)?"),
+        )),
+    }
+    checks
 }
 
 /// Whether `dir` is on a memory file system: the longest mount point that

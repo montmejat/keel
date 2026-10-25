@@ -432,13 +432,18 @@ fn image(out: &std::path::Path, modules: &[String], kernel: Option<String>) -> R
 /// Prints each machine's checks. `false` if any failed.
 fn doctor(dataflow: Option<&std::path::Path>) -> Result<bool, Box<dyn Error>> {
     use keel_daemon::doctor::{self, Level};
-    let machines = match dataflow {
-        Some(path) => keel_daemon::dataflow::Dataflow::load(path)?.machines,
-        None => Default::default(),
-    };
+    let loaded = dataflow.map(keel_daemon::dataflow::Dataflow::load).transpose()?;
+    let machines = loaded.as_ref().map(|d| d.machines.clone()).unwrap_or_default();
     let mut reports = Vec::new();
     if machines.is_empty() {
         reports.push(("this machine".to_owned(), Ok(doctor::here())));
+    }
+    // A dataflow on this machine: what each of its nodes needs, as it sees it.
+    if let (Some(d), Some(path)) = (&loaded, dataflow) {
+        if d.machines.is_empty() {
+            let dir = path.parent().unwrap_or(std::path::Path::new("."));
+            reports.push((format!("nodes of {}", path.display()), Ok(doctor::nodes(d, dir))));
+        }
     }
     for (machine, address) in machines {
         reports.push((format!("{machine} ({address})"), packaging::diagnose(&address)));
@@ -461,7 +466,7 @@ fn doctor(dataflow: Option<&std::path::Path>) -> Result<bool, Box<dyn Error>> {
                 Level::Fail => "fail",
             };
             ok &= check.level != Level::Fail;
-            println!("  {level:<5} {:<20} {}", check.name, check.detail);
+            println!("  {level:<5} {:<24} {}", check.name, check.detail);
         }
     }
     Ok(ok)

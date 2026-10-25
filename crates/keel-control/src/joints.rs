@@ -19,6 +19,13 @@ use crate::{Command, State};
 pub trait Joints {
     fn count(&self) -> usize;
 
+    /// For `keel doctor`: whatever is worth checking before a run, reported
+    /// with [`keel::check::report`]. Opening the joints already checked that
+    /// they can be opened.
+    fn check(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
     /// Before the first cycle: put the drives in their mode, enable them.
     fn start(&mut self) -> io::Result<()> {
         Ok(())
@@ -57,6 +64,30 @@ impl Settings {
             cycle: cycle::cycle_arg()?,
             deadline: Duration::from_micros(crate::arg("deadline-us", 300)?),
         })
+    }
+}
+
+/// A joints node's `main`, after opening its joints: checks them if
+/// `keel doctor` asked, joins the dataflow, and runs the loop, waiting with
+/// `--spin-us` (see `Node::set_spin`).
+pub fn run(mut joints: impl Joints, settings: Settings) -> io::Result<()> {
+    if keel::check::requested() {
+        joints.check()?;
+    }
+    let mut node = Node::from_env()?;
+    node.set_spin(Duration::from_micros(crate::arg("spin-us", 0)?));
+    JointLoop::new(joints, settings, &node)?.run(&mut node)
+}
+
+/// Prints a node's error as a sentence, not as a debug dump, and exits
+/// with a failure: for `main`.
+pub fn exit_on(result: io::Result<()>) -> std::process::ExitCode {
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::ExitCode::FAILURE
+        }
     }
 }
 

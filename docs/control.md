@@ -75,8 +75,10 @@ motor's CAN id and the id it answers on, in joint order, on CAN FD or
 classic CAN.
 
 - **At start**, each motor is put in MIT mode, its ranges are read from its
-  registers, and it's enabled. A motor that doesn't answer stops the node
-  with its id. **At stop**, they're disabled.
+  registers, and it's enabled. A motor that doesn't answer is waited for,
+  with a line in the log ("waiting for motor 0x01 on `vcan0`… is the robot,
+  or drydock, running?"): the robot may be started after keel. **At stop**,
+  they're disabled.
 - **Each cycle, one round of frames**: a command to each motor, as soon as
   the controller answers, or the previous one again at the deadline. The
   motors answer each frame with their state, and those answers are the next
@@ -97,16 +99,17 @@ on the wire, at 1 Mbit/s with the data at 5 (OpenArm's settings):
 
 `examples/openarm.yml`: OpenArm v1's seven joints and gripper, with
 `openarm-wave` holding the home pose, swinging the first joint and working
-the gripper. The arm is drydock, on `vcan0`; in drydock's repository:
+the gripper. The arm is drydock, on `vcan0`; in drydock's repository (it
+fetches OpenArm's model the first time):
 
 ```sh
-examples/openarm/setup.sh                              # OpenArm's model, once
-./target/release/drydock examples/openarm/robot.yml    # the arm
+drydock examples/openarm/robot.yml    # the arm
 ```
 
-then here:
+then here, in either order (`keel-can` waits for the motors):
 
 ```sh
+keel doctor examples/openarm.yml      # what's missing, with the command to fix it
 keel run examples/openarm.yml
 keel logs arm             # "motor 0x03: MIT mode, ±12.5 rad, ±10 rad/s, ±28 N m, answering on 0x13"
 keel logs controller      # "3.0s joints at -0.40 -0.00 -0.00 +1.64 -0.00 -0.00 +0.06 -1.03 rad"
@@ -123,6 +126,7 @@ driver implements `Joints`: what its joints need and nothing else.
 ```rust
 impl Joints for MyArm {
     fn count(&self) -> usize { 6 }
+    fn check(&mut self) -> io::Result<()> { /* for `keel doctor`: do the drives answer? */ Ok(()) }
     fn start(&mut self) -> io::Result<()> { /* modes, enable */ Ok(()) }
     /// Every joint's state and the moment it describes, once there's a whole one.
     fn read(&mut self, states: &mut [State]) -> io::Result<Option<u64>> { … }
@@ -131,8 +135,15 @@ impl Joints for MyArm {
     fn stop(&mut self) -> io::Result<()> { /* disable */ Ok(()) }
 }
 
-JointLoop::new(MyArm::open()?, Settings::from_args()?, &node)?.run(&mut node)
+fn main() -> ExitCode {
+    joints::exit_on(MyArm::open().and_then(|arm| joints::run(arm, Settings::from_args()?)))
+}
 ```
+
+`check` is for `keel doctor`: what's worth knowing before a run (`keel-can`
+asks whether its motors answer). `joints::run` does a joints node's whole
+`main` after opening its joints: the check if the doctor asked, joining the
+dataflow, the loop.
 
 `JointLoop` is the rest, the same for every driver: the tick, publishing
 the state, waiting for the command within the cycle, writing it every cycle

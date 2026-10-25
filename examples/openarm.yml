@@ -5,16 +5,14 @@
 #
 # The arm is drydock (github.com/montmejat/drydock): OpenArm's MuJoCo model
 # behind vcan0, answering as the motors would, frame for frame and as fast as
-# a real bus carries them. In drydock's repository, once:
+# a real bus carries them. Start it, in drydock's repository (it fetches
+# OpenArm's model the first time):
 #
-#   examples/openarm/setup.sh
+#   drydock examples/openarm/robot.yml
 #
-# then, before this dataflow:
-#
-#   ./target/release/drydock examples/openarm/robot.yml
-#
-# vcan0 must carry CAN FD (drydock's scripts/vcan.sh makes it so). On a real
-# OpenArm, `--interface can0`; nothing else changes.
+# before or after this dataflow: keel-can waits for the motors to answer.
+# `keel doctor examples/openarm.yml` says what's missing, and how to fix it.
+# On a real OpenArm, `--interface can0`; nothing else changes.
 #
 # 500 Hz: a cycle's sixteen frames (eight commands, eight answers) keep the
 # bus 41% busy on CAN FD. At 1 kHz they'd take 82% of it; on classic CAN,

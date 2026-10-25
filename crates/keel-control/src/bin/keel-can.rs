@@ -14,39 +14,40 @@
 //! - `damiao`: Damiao's motors in MIT mode
 //!   ([`keel_control::damiao::DamiaoJoints`]): the loop closes on the
 //!   motors. `--motors` lists each motor's CAN id and the id it answers on,
-//!   in joint order; `--fd true` for motors on CAN FD.
+//!   in joint order; `--fd true` for motors on CAN FD. Motors that don't
+//!   answer yet are waited for.
+//!
+//! `keel doctor` checks that the interface is there (and carries CAN FD if
+//! asked), and whether the motors answer.
 //!
 //! `--interface can0 --joints 1 --hz 1000 --cycle same --deadline-us 300 --spin-us 0`
 //! `--protocol damiao --motors 0x01:0x11,0x02:0x12 --fd true`
 
 use std::io;
-use std::time::Duration;
+use std::process::ExitCode;
 
-use keel::Node;
 use keel_control::arg;
 use keel_control::can::CanJoints;
 use keel_control::cycle::Cycle;
 use keel_control::damiao::DamiaoJoints;
-use keel_control::joints::{JointLoop, Settings};
+use keel_control::joints::{self, Settings};
 
-fn main() -> io::Result<()> {
+fn main() -> ExitCode {
+    joints::exit_on(main_())
+}
+
+fn main_() -> io::Result<()> {
     let interface: String = arg("interface", "can0".into())?;
     let settings = Settings::from_args()?;
     if settings.cycle == Cycle::Lockstep {
         return Err(io::Error::other("--cycle lockstep is for simulations: a bus keeps time"));
     }
     match arg("protocol", String::from("made-up"))?.as_str() {
-        "made-up" => run(CanJoints::open(&interface, arg("joints", 1)?)?, settings),
+        "made-up" => joints::run(CanJoints::open(&interface, arg("joints", 1)?)?, settings),
         "damiao" => {
             let motors = DamiaoJoints::parse_motors(&arg("motors", String::new())?)?;
-            run(DamiaoJoints::open(&interface, &motors, arg("fd", false)?)?, settings)
+            joints::run(DamiaoJoints::open(&interface, &motors, arg("fd", false)?)?, settings)
         }
         other => Err(io::Error::other(format!("--protocol: `made-up` or `damiao`, not {other:?}"))),
     }
-}
-
-fn run(joints: impl keel_control::joints::Joints, settings: Settings) -> io::Result<()> {
-    let mut node = Node::from_env()?;
-    node.set_spin(Duration::from_micros(arg("spin-us", 0)?));
-    JointLoop::new(joints, settings, &node)?.run(&mut node)
 }

@@ -164,14 +164,16 @@ pub fn register_answer(d: &[u8; 8]) -> Option<(u32, u8, [u8; 4])> {
     matches!(d[2], READ | WRITE).then(|| (u16::from_le_bytes([d[0], d[1]]) as u32, d[3], [d[4], d[5], d[6], d[7]]))
 }
 
-/// How long a motor has to answer a register request at start.
+/// How long a motor has to answer a register request, before asking again.
 const REGISTER_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Damiao's motors on a bus, as joints, in MIT mode: the command as it is,
 /// the loop closing on the motors.
 ///
 /// At start, each is put in MIT mode, its ranges are read from its
-/// registers, and it's enabled; at stop, it's disabled. The motors speak
+/// registers, and it's enabled; at stop, it's disabled. A motor that doesn't
+/// answer is waited for, and said so: the robot (or drydock) may be started
+/// after keel. The motors speak
 /// only when spoken to: each cycle's round of frames brings their answers,
 /// which are the next state, stamped with when the round went out. Before
 /// the first command, the round asks for feedback without commanding
@@ -235,8 +237,34 @@ impl DamiaoJoints {
         Frame::new(id, &data).fd(self.fd)
     }
 
-    /// Sends a register request for motor `i`, and waits for its answer.
+    /// Sends a register request for motor `i` until it answers, saying once
+    /// that it's waiting.
     fn ask(&self, i: usize, request: [u8; 8]) -> io::Result<[u8; 4]> {
+        let mut waited = false;
+        loop {
+            if let Some(value) = self.ask_once(i, request)? {
+                if waited {
+                    println!("motor {:#04x} answers", self.motors[i].id);
+                }
+                return Ok(value);
+            }
+            if !waited {
+                println!("waiting for {}: is the robot, or drydock, running?", self.describe(i));
+                waited = true;
+            }
+        }
+    }
+
+    /// Motor `i`, and where its answers should come from.
+    fn describe(&self, i: usize) -> String {
+        let m = &self.motors[i];
+        let fd = if self.fd { ", in CAN FD" } else { "" };
+        format!("motor {:#04x} on `{}` (answering on {:#04x}{fd})", m.id, self.interface, m.master)
+    }
+
+    /// Sends a register request for motor `i`, and waits a little for its
+    /// answer.
+    fn ask_once(&self, i: usize, request: [u8; 8]) -> io::Result<Option<[u8; 4]>> {
         let m = &self.motors[i];
         self.bus.send(&self.frame(REGISTER_ID, request))?;
         let until = Instant::now() + REGISTER_TIMEOUT;
@@ -248,24 +276,46 @@ impl DamiaoJoints {
                 let answer = frame.eight().filter(|_| frame.id == m.master).and_then(|d| register_answer(&d));
                 if let Some((id, rid, value)) = answer {
                     if id == m.id && rid == request[3] {
-                        return Ok(value);
+                        return Ok(Some(value));
                     }
                 }
             }
         }
-        Err(io::Error::other(format!(
-            "motor {:#04x} doesn't answer on `{}` (its answers should come on {:#04x}{})",
-            m.id,
-            self.interface,
-            m.master,
-            if self.fd { ", in CAN FD" } else { "" }
-        )))
+        Ok(None)
     }
 }
 
 impl Joints for DamiaoJoints {
     fn count(&self) -> usize {
         self.motors.len()
+    }
+
+    /// Whether each motor answers: a warning, not a failure, if one doesn't,
+    /// since the robot (or drydock) may just not be started yet.
+    fn check(&mut self) -> io::Result<()> {
+        use keel::check::{report, Level};
+        let what = format!("motors on {}", self.interface);
+        let silent: Vec<usize> = (0..self.motors.len())
+            .filter_map(|i| match self.ask_once(i, read_register(self.motors[i].id, reg::MST_ID)) {
+                Ok(Some(_)) => None,
+                Ok(None) => Some(Ok(i)),
+                Err(e) => Some(Err(e)),
+            })
+            .collect::<io::Result<_>>()?;
+        let n = self.motors.len();
+        match silent.len() {
+            0 => report(Level::Ok, &what, &format!("all {n} answer")),
+            k if k == n => report(
+                Level::Warn,
+                &what,
+                &format!("none of the {n} answers: start the robot, or drydock, before running"),
+            ),
+            _ => {
+                let list: Vec<String> = silent.iter().map(|&i| self.describe(i)).collect();
+                report(Level::Warn, &what, &format!("no answer from {}", list.join("; ")));
+            }
+        }
+        Ok(())
     }
 
     /// Each motor in MIT mode, its ranges read, then enabled: one request at

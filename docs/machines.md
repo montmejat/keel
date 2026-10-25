@@ -91,5 +91,27 @@ robot (127.0.0.1:7411)
   ok    store                /root/.local/share/keel, 0 binaries, 0 MiB, in memory: emptied by a reboot
 ```
 
+With a dataflow that runs on this machine, it also asks each node what it
+needs. It starts the node's program in check mode (`KEEL_CHECK` set): the
+node does its setup as usual, opening its devices, and `Node::from_env` ends
+it before it joins anything. A setup that fails is a `fail`, with the node's
+own message; a node can report more with `keel::check::report`. `keel-can`
+checks its interface, and whether the motors answer:
+
+```
+nodes of examples/openarm.yml
+  fail  arm                      no CAN interface `vcan0`: sudo ip link add dev vcan0 type vcan && sudo ip link set vcan0 mtu 72 up
+  ok    controller               ready
+```
+
+```
+nodes of examples/openarm.yml
+  warn  arm: motors on vcan0     none of the 8 answers: start the robot, or drydock, before running
+  ok    controller               ready
+```
+
+So a node's setup, before `Node::from_env`, must be harmless: open, read,
+ask; nothing that moves.
+
 It reads, it doesn't measure: the latency benchmarks (`examples/jitter.yml`,
 `examples/hop.yml`) do that.

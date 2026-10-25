@@ -14,17 +14,17 @@
 //! `--joints 1 --hz 1000 --cycle same --deadline-us 300 --spin-us 0`
 
 use std::io;
-use std::time::Duration;
+use std::process::ExitCode;
 
-use keel::Node;
 use keel_control::arg;
-use keel_control::joints::{JointLoop, Settings};
+use keel_control::joints::{self, Settings};
 use keel_control::plant::Pendulums;
 
-fn main() -> io::Result<()> {
+fn main() -> ExitCode {
+    joints::exit_on(main_())
+}
+
+fn main_() -> io::Result<()> {
     let settings = Settings::from_args()?;
-    let joints = Pendulums::new(arg("joints", 1)?, settings.hz);
-    let mut node = Node::from_env()?;
-    node.set_spin(Duration::from_micros(arg("spin-us", 0)?));
-    JointLoop::new(joints, settings, &node)?.run(&mut node)
+    joints::run(Pendulums::new(arg("joints", 1)?, settings.hz), settings)
 }

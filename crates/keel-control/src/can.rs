@@ -88,7 +88,7 @@ impl Bus {
         unsafe {
             let index = libc::if_nametoindex(name.as_ptr());
             if index == 0 {
-                return Err(io::Error::other(format!("no CAN interface `{interface}`")));
+                return Err(io::Error::other(format!("no CAN interface `{interface}`: {}", make(interface, fd))));
             }
             let raw = libc::socket(libc::PF_CAN, libc::SOCK_RAW | libc::SOCK_CLOEXEC, libc::CAN_RAW);
             if raw < 0 {
@@ -104,8 +104,15 @@ impl Bus {
                     return Err(io::Error::last_os_error());
                 }
                 if ifr.ifr_ifru.ifru_mtu as usize != CANFD_MTU {
+                    let fix = match interface.starts_with("vcan") {
+                        true => format!("sudo ip link set {interface} down && sudo ip link set {interface} mtu 72 up"),
+                        false => format!(
+                            "sudo ip link set {interface} down && sudo ip link set {interface} type can bitrate \
+                             1000000 dbitrate 5000000 fd on && sudo ip link set {interface} up"
+                        ),
+                    };
                     return Err(io::Error::other(format!(
-                        "`{interface}` doesn't carry CAN FD frames (its MTU isn't 72)"
+                        "`{interface}` doesn't carry CAN FD frames (its MTU isn't 72): {fix}"
                     )));
                 }
                 let on: libc::c_int = 1;
@@ -179,6 +186,22 @@ impl Bus {
             },
             n => Ok(n > 0),
         }
+    }
+}
+
+/// How to make an interface that's missing: a virtual one for `vcan*`, a
+/// real one's settings otherwise (1 Mbit/s, and 5 for CAN FD's data).
+fn make(interface: &str, fd: bool) -> String {
+    match (interface.starts_with("vcan"), fd) {
+        (true, _) => format!("sudo ip link add dev {interface} type vcan && sudo ip link set {interface} mtu 72 up"),
+        (false, true) => format!(
+            "is the adapter plugged in? Then: sudo ip link set {interface} type can bitrate 1000000 dbitrate \
+             5000000 fd on && sudo ip link set {interface} up"
+        ),
+        (false, false) => format!(
+            "is the adapter plugged in? Then: sudo ip link set {interface} type can bitrate 1000000 && sudo ip \
+             link set {interface} up"
+        ),
     }
 }
 

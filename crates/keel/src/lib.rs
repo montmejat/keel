@@ -12,6 +12,7 @@
 //! messages can be followed through every node it passes.
 
 pub mod channel;
+pub mod check;
 pub mod periodic;
 pub mod protocol;
 pub mod shm;
@@ -155,7 +156,15 @@ pub struct Node {
 impl Node {
     /// Connects to the daemon that spawned this process. Blocks until every
     /// node in the dataflow has registered.
+    ///
+    /// Started by `keel doctor` to check (see [`check`]), it ends the process
+    /// instead: the node's setup, before this, is what was being checked.
     pub fn from_env() -> io::Result<Self> {
+        // Started by `keel doctor`: the setup before this went well, and
+        // that's all it wanted to know (see `check`).
+        if check::requested() {
+            std::process::exit(0);
+        }
         let id = env(ENV_NODE_ID)?;
         let index = env(ENV_NODE_INDEX)?.parse().map_err(|_| io::Error::other(format!("invalid {ENV_NODE_INDEX}")))?;
         let shm_dir = PathBuf::from(env(ENV_SHM_DIR)?);
