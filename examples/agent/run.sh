@@ -35,11 +35,11 @@ case $scenario in
   slow)  fault='slow|behind|processing|latency|too long|lag' ;;
   stall|stall-once) fault='stall|stuck|hung|hang|stopped|frozen|not (consuming|processing|forwarding|sending)' ;;
   crash) fault='crash|restart|exit|loop' ;;
-  openarm-dead) who=$elbow; brk=openarm_joint4:dead@4
+  openarm-dead) who=$elbow; brk='{ joint: openarm_joint4, fault: dead, at: 4 s }'
     fault='dead|no torque|zero torque|0(\.0)? N ?m|not (giving|producing|applying|delivering) (any )?torque|limp|unpowered|lost power|(motor|drive) (has )?(failed|failure|fault)' ;;
-  openarm-weak) who=$elbow; brk=openarm_joint4:weak@4
+  openarm-weak) who=$elbow; brk='{ joint: openarm_joint4, fault: weak, at: 4 s }'
     fault='weak|fifth|20 ?%|fraction|less torque|insufficient|under-?powered|reduced torque|not enough torque|sag' ;;
-  openarm-freeze) who='joint ?1\b|openarm_joint1'; brk=openarm_joint1:freeze@4
+  openarm-freeze) who='joint ?1\b|openarm_joint1'; brk='{ joint: openarm_joint1, fault: freeze, at: 4 s }'
     fault='frozen|freez|stuck|not (changing|updating|moving)|unchanged|encoder|sensor|reading' ;;
   openarm-healthy) brk= ;;
   *) echo "no scenario $scenario" >&2; exit 2 ;;
@@ -66,7 +66,13 @@ if [[ $scenario == openarm-* ]]; then
   # The robot: drydock, breaking a motor 4 s in (or not). The question doesn't
   # say anything is wrong.
   robot=${DRYDOCK_ROBOT:-../drydock/examples/openarm/robot.yml}
-  ${DRYDOCK:-drydock} "$robot" ${brk:+--break $brk} > "$tmp/drydock.log" 2>&1 &
+  # What drydock breaks, as a scenario (none for a healthy arm).
+  breaks=()
+  if [[ -n $brk ]]; then
+    echo "faults: [$brk]" > "$tmp/faults.scenario.yml"
+    breaks=(--scenario "$tmp/faults.scenario.yml")
+  fi
+  ${DRYDOCK:-drydock} "$robot" "${breaks[@]}" > "$tmp/drydock.log" 2>&1 &
   dataflow=examples/openarm.yml
   intro="A keel dataflow drives a robot arm on this machine."
   task="Is anything wrong with it? If so: which part, what is wrong, and what is your evidence. Be brief."
