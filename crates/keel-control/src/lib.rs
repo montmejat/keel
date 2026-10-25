@@ -50,7 +50,7 @@ impl State {
 
     /// The joints of a `state` payload.
     pub fn read(payload: &[u8]) -> impl Iterator<Item = State> + '_ {
-        payload.chunks_exact(Self::LEN).map(|b| State {
+        payload.as_chunks::<{ Self::LEN }>().0.iter().map(|b| State {
             position: f64_at(b, 0),
             velocity: f64_at(b, 8),
             effort: f64_at(b, 16),
@@ -60,7 +60,7 @@ impl State {
 
     /// Fills a `state` payload of `states.len() * State::LEN` bytes.
     pub fn write(states: &[State], payload: &mut [u8]) {
-        for (state, b) in states.iter().zip(payload.chunks_exact_mut(Self::LEN)) {
+        for (state, b) in states.iter().zip(payload.as_chunks_mut::<{ Self::LEN }>().0) {
             b[..8].copy_from_slice(&state.position.to_le_bytes());
             b[8..16].copy_from_slice(&state.velocity.to_le_bytes());
             b[16..24].copy_from_slice(&state.effort.to_le_bytes());
@@ -140,7 +140,7 @@ impl Command {
     }
 
     pub fn read(payload: &[u8]) -> impl Iterator<Item = Command> + '_ {
-        payload.chunks_exact(Self::LEN).map(|b| Command {
+        payload.as_chunks::<{ Self::LEN }>().0.iter().map(|b| Command {
             position: f64_at(b, 0),
             velocity: f64_at(b, 8),
             kp: f64_at(b, 16),
@@ -150,7 +150,7 @@ impl Command {
     }
 
     pub fn write(commands: &[Command], payload: &mut [u8]) {
-        for (c, b) in commands.iter().zip(payload.chunks_exact_mut(Self::LEN)) {
+        for (c, b) in commands.iter().zip(payload.as_chunks_mut::<{ Self::LEN }>().0) {
             for (i, x) in [c.position, c.velocity, c.kp, c.kd, c.effort].iter().enumerate() {
                 b[i * 8..i * 8 + 8].copy_from_slice(&x.to_le_bytes());
             }
