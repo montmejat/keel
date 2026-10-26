@@ -1,6 +1,6 @@
 # 0034: Position servos on a serial bus: keel-dynamixel
 
-**Status:** Proposed, 2026-10-26
+**Status:** Accepted, 2026-10-26
 
 ## Context
 The second milestone is Pollen's Microduck walking: a 25 cm biped with
