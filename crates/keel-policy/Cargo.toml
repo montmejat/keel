@@ -1,0 +1,12 @@
+[package]
+name = "keel-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A policy: an ONNX network from joint states and an IMU to joint commands, run by tract (decision 0036)"
+
+[dependencies]
+keel = { path = "../keel" }
+keel-control = { path = "../keel-control" }
+# The one crate that depends on tract: keel's others stay as small as they are.
+tract-onnx = "0.23.9"

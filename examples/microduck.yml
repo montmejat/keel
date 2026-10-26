@@ -19,6 +19,9 @@ nodes:
       - /tmp/microduck-tty
       - --hz
       - "50"
+      # A cycle is 20 ms: up to 5 for the controller to answer.
+      - --deadline-us
+      - "5000"
       - --motors
       - 20,21,22,23,24,30,31,32,33,34,10,11,12,13,14
       # Pollen's runtime sets every servo's P gain to 200.

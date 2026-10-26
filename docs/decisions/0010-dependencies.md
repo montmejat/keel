@@ -29,7 +29,9 @@ the layer uses, take the crate.
 
 ## Consequences
 - Today's dependencies: `libc` (node crate); `libc`, `serde`, `serde_json`
-  and `serde_yaml` (daemon); `clap` and `ratatui` (CLI).
+  and `serde_yaml` (daemon); `clap` and `ratatui` (CLI); `tract-onnx`
+  (`keel-policy` only, [0036](0036-policies-as-onnx.md): 97 crates and a
+  24 MB binary, kept out of every other crate).
 - `serde_yaml` is deprecated upstream. Replace it (e.g. `serde_yml`, or TOML)
   before it causes trouble.
 - Each new dependency is noted here, in this file's Consequences.
