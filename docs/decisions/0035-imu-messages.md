@@ -1,6 +1,6 @@
 # 0035: IMU messages
 
-**Status:** Proposed, 2026-10-26
+**Status:** Accepted, 2026-10-26
 
 ## Context
 keel's payloads so far are joints: `State` and `Command`. A walking robot's
