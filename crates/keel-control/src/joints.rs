@@ -48,6 +48,13 @@ pub trait Joints {
     fn stop(&mut self) -> io::Result<()> {
         Ok(())
     }
+
+    /// What else to publish with the state just read, under its stamp and
+    /// just before it: an IMU read in the same transaction. Outputs, and
+    /// their payloads.
+    fn also_publish(&mut self) -> Vec<(&'static str, Vec<u8>)> {
+        Vec::new()
+    }
 }
 
 /// How a joints' loop runs.
@@ -178,6 +185,11 @@ impl<J: Joints> JointLoop<J> {
                     println!("the joints are back");
                 }
                 (heard, complained) = (Instant::now(), false);
+                // Before the state, so a controller has them when the state
+                // comes, and the state is what its command answers.
+                for (output, payload) in self.joints.also_publish() {
+                    node.send_stamped(output, stamp, payload.len(), |p| p.copy_from_slice(&payload))?;
+                }
                 node.send_stamped("state", stamp, n * State::LEN, |payload| State::write(&states, payload))?;
                 if self.controlled && cycle != Cycle::Next {
                     let asked = node.last_sent_span();
