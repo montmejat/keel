@@ -41,4 +41,4 @@ Superseded records stay, with a link to what replaced them.
 | [0033](0033-joints-say-what-is-wrong.md) | Joints say their torque and what's wrong with them, in their state and their node's log | Proposed |
 | [0034](0034-dynamixel-servos.md) | Position servos on a serial bus: keel-dynamixel | Accepted |
 | [0035](0035-imu-messages.md) | IMU messages | Accepted |
-| [0036](0036-policies-as-onnx.md) | Policies are ONNX networks, run by tract in their own node | Proposed |
+| [0036](0036-policies-as-onnx.md) | Policies are ONNX networks, run by tract in their own node | Accepted |

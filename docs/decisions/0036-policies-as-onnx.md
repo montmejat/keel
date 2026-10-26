@@ -1,6 +1,6 @@
 # 0036: Policies are ONNX networks, run by tract in their own node
 
-**Status:** Proposed, 2026-10-26
+**Status:** Accepted, 2026-10-26
 
 ## Context
 The Microduck walks by a policy trained in simulation: Pollen publishes
