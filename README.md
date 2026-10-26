@@ -33,8 +33,8 @@ in [docs/architecture.md](docs/architecture.md), and every decision has a
 - a control loop closed within its 1 ms cycle: **~20 µs** from state to
   command, **1.3 µs** spinning
 - every message traced and stamped, across machines
-- 6 direct dependencies; the rest is the kernel: shared memory, futexes,
-  SCHED_FIFO, systemd, SSH, SocketCAN
+- 6 direct dependencies, and tract in the policy node only; the rest is the
+  kernel: shared memory, futexes, SCHED_FIFO, systemd, SSH, SocketCAN, ttys
 
 ## The stack
 

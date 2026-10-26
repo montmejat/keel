@@ -1,0 +1,56 @@
+# Pollen's Microduck, standing (or walking) by its own policy, run by keel:
+# keel-dynamixel is the bus master, keel-policy runs Pollen's velstand
+# network (decision 0036): each state and IMU reading in, the servos'
+# targets out, at 50 Hz.
+#
+# The policy is Pollen's, downloaded once (Apache-2.0); keel-policy says the
+# command if it's missing:
+#
+#   curl -fL https://huggingface.co/pollen-robotics/microduck-policies/resolve/main/velstand.onnx \
+#     -o examples/microduck/velstand.onnx
+#
+# The duck is drydock, in lockstep, so it stands until keel drives it:
+#
+#   drydock examples/microduck/robot.yml --lockstep 50
+#
+# `--walk 0.2,0,0` walks it forward at 0.2 m/s; zero stands.
+nodes:
+  - id: duck
+    path: ../target/debug/keel-dynamixel
+    args:
+      - --port
+      - /tmp/microduck-tty
+      - --hz
+      - "50"
+      # A cycle is 20 ms: up to 5 for the controller to answer.
+      - --deadline-us
+      - "5000"
+      - --motors
+      - 20,21,22,23,24,30,31,32,33,34,10,11,12,13,14
+      # Pollen's runtime sets every servo's P gain to 200.
+      - --p-gain
+      - "200"
+      # The body IMU, on the bus as device 200, mounted turned +90° about y.
+      - --imu
+      - "200"
+      - --imu-mount
+      - 0.7071068,0,0.7071068,0
+      - --names
+      - left_hip_yaw,left_hip_roll,left_hip_pitch,left_knee,left_ankle,neck_pitch,head_pitch,head_yaw,head_roll,mouth,right_hip_yaw,right_hip_roll,right_hip_pitch,right_knee,right_ankle
+    restart: on-failure
+    inputs:
+      command: { source: policy/command, keep: latest }
+
+  - id: policy
+    path: ../target/debug/keel-policy
+    args:
+      - --model
+      # Relative to where keel runs, as nodes are started there: this repository.
+      - examples/microduck/velstand.onnx
+      - --joints
+      - left_hip_yaw,left_hip_roll,left_hip_pitch,left_knee,left_ankle,neck_pitch,head_pitch,head_yaw,head_roll,mouth,right_hip_yaw,right_hip_roll,right_hip_pitch,right_knee,right_ankle
+      - --walk
+      - 0,0,0
+    inputs:
+      state: { source: duck/state, keep: latest }
+      imu: { source: duck/imu, keep: latest }

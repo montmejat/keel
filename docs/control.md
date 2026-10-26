@@ -62,6 +62,7 @@ stamp of the state it answers.
 | `keel-sim` | pendulums, stepped each tick | `--joints 1 --hz 1000 --cycle same\|next\|lockstep --deadline-us 300 --spin-us 0` |
 | `keel-can` | Damiao's motors on a CAN bus: a cyclic bus master over SocketCAN | `--interface can0 --motors 0x01:0x11,… --fd false --hz 1000 --cycle same\|next --deadline-us 300 --spin-us 0 --names a,b` |
 | `keel-dynamixel` | Dynamixel servos (Protocol 2.0) on a serial bus, and an IMU on it: a cyclic bus master | `--port /dev/ttyS2 --baud 1000000 --motors 20,21,… --p-gain 400 --imu 200 --imu-mount w,x,y,z --hz 50 --cycle same\|next --names a,b` |
+| `keel-policy` | an ONNX policy: each state and IMU reading through a network, answered with positions | `--model velstand.onnx --joints a,b,… --walk 0,0,0 --head 0,0,0,0 --body 0,0,0,0,0,0 --lowpass 0.7 --lowpass-head 0.5 --action-scale 1` |
 | `keel-pid` | a PID per joint, a command for each state | `--target 1.0 --kp 40 --ki 40 --kd 4 --limit 10 --spin-us 0 --period-us 0` |
 
 ## Damiao's motors
@@ -158,7 +159,38 @@ keel logs controller      # "0.0s joints within 0.006 rad of standing; down [+0.
 A fixed pose doesn't balance it: servos that only hold positions sag under
 its weight, it leans forward, and the lean feeds itself. At Pollen's P gain
 (200) it tips over within two seconds; at the factory's (400) it leans
-0.16 rad in seven. Its policy balances it ([0036](decisions/0036-policies-as-onnx.md)).
+0.16 rad in seven. Its policy balances it.
+
+## Policies
+
+`keel-policy` runs a network trained in simulation, as an ONNX file, with
+tract, in a node of its own: the one crate that depends on it
+([0036](decisions/0036-policies-as-onnx.md)).
+
+- **What it was trained with is in its file**: the joints it drives and
+  their default pose, its action scale, and its observation's parts, by
+  name. keel knows the parts of Pollen's Microduck policies: the gyro,
+  gravity in the body's frame, joint positions from the default pose, their
+  velocities, the last action, and the commands (`--walk`, `--head`,
+  `--body`). A policy observing anything else is refused at start, by name.
+- **Each state, with the latest IMU reading, gets a command**: the default
+  pose plus the action scale times the network's output, low-passed as
+  Pollen's runtime does (0.7 for the legs, 0.5 for the head: Pollen says
+  they must match training). Its joints are found by name (`--joints`
+  names the state's); the others hold where they were.
+
+`examples/microduck-policy.yml`: the duck on Pollen's `velstand` policy, in
+drydock as above. At Pollen's gain, where the fixed pose fell in two
+seconds, it stands, gravity within 0.02 of straight down, and asked to walk
+at 0.2 m/s, stays up (11 s, rocking ±0.06). Whether it goes forward isn't
+visible from keel: drydock doesn't say where the duck is.
+
+```sh
+curl -fL https://huggingface.co/pollen-robotics/microduck-policies/resolve/main/velstand.onnx \
+  -o examples/microduck/velstand.onnx
+keel run examples/microduck-policy.yml
+keel logs policy          # "1.0s down [-0.01 -0.00 -1.00], asked to walk [0.0, 0.0, 0.0]"
+```
 
 ## Watching joints
 
