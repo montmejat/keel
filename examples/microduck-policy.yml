@@ -13,7 +13,9 @@
 #
 #   drydock examples/microduck/robot.yml --lockstep 50
 #
-# `--walk 0.2,0,0` walks it forward at 0.2 m/s; zero stands.
+# It stands at first. To steer it, in another terminal:
+#
+#   target/debug/keel-keyboard     # w/s ↑/↓ forward and back, a/d ←/→ turn, space stop
 nodes:
   - id: duck
     path: ../target/debug/keel-dynamixel
@@ -54,3 +56,8 @@ nodes:
     inputs:
       state: { source: duck/state, keep: latest }
       imu: { source: duck/imu, keep: latest }
+      walk: { source: keys/walk, keep: latest }
+
+  # Keys from a terminal running `keel-keyboard`, as a walk command.
+  - id: keys
+    path: ../target/debug/keel-keyboard

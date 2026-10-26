@@ -37,6 +37,12 @@ bus or simulation, back to back, little-endian:
 | `State` | position (rad), velocity (rad/s), effort (N m: the torque the drive gives, as it measures it), as `f64`; then its status, two `u32`: flags (drive error, disabled, underpowered, behind, frozen) and the drive's own code | 32 |
 | `Command` | position (rad), velocity (rad/s), kp (N m/rad), kd (N m s/rad), effort (N m), as `f64` | 40 |
 
+Two more carry the whole body, one per message: an `Imu` reading
+([0035](decisions/0035-imu-messages.md)), orientation (w x y z), angular
+velocity and acceleration, ten `f64` (80 bytes), NaN for what isn't
+measured; and a `Walk` command for a walking robot, forward (m/s), left
+(m/s) and turn (rad/s), three `f64` (24 bytes).
+
 ```rust
 for state in State::read(&data) { /* state.position, state.velocity */ }
 node.send_with("command", n * Command::LEN, |p| Command::write(&commands, p))?;
@@ -63,6 +69,7 @@ stamp of the state it answers.
 | `keel-can` | Damiao's motors on a CAN bus: a cyclic bus master over SocketCAN | `--interface can0 --motors 0x01:0x11,… --fd false --hz 1000 --cycle same\|next --deadline-us 300 --spin-us 0 --names a,b` |
 | `keel-dynamixel` | Dynamixel servos (Protocol 2.0) on a serial bus, and an IMU on it: a cyclic bus master | `--port /dev/ttyS2 --baud 1000000 --motors 20,21,… --p-gain 400 --imu 200 --imu-mount w,x,y,z --hz 50 --cycle same\|next --names a,b` |
 | `keel-policy` | an ONNX policy: each state and IMU reading through a network, answered with positions | `--model velstand.onnx --joints a,b,… --walk 0,0,0 --head 0,0,0,0 --body 0,0,0,0,0,0 --lowpass 0.7 --lowpass-head 0.5 --action-scale 1` |
+| `keel-keyboard` | a `Walk` command from the keys of a terminal running it: w/s ↑/↓, a/d ←/→, q/e, space | `--socket <path> --max 0.4,0.3,1.0` |
 | `keel-pid` | a PID per joint, a command for each state | `--target 1.0 --kp 40 --ki 40 --kd 4 --limit 10 --spin-us 0 --period-us 0` |
 
 ## Damiao's motors
@@ -189,8 +196,26 @@ visible from keel: drydock doesn't say where the duck is.
 curl -fL https://huggingface.co/pollen-robotics/microduck-policies/resolve/main/velstand.onnx \
   -o examples/microduck/velstand.onnx
 keel run examples/microduck-policy.yml
-keel logs policy          # "1.0s down [-0.01 -0.00 -1.00], asked to walk [0.0, 0.0, 0.0]"
+keel logs policy          # "1.0s down [-0.01 -0.00 -1.00]; walking +0.00 m/s forward, …"
 ```
+
+**Steering it.** The dataflow's `keys` node is `keel-keyboard`: it publishes
+a `Walk` command each cycle, which `keel-policy` takes in place of `--walk`.
+A node can't read a terminal (keel starts nodes in their own process
+group), so the same program, run in a terminal, sends that terminal's keys
+to the node over a local socket:
+
+```sh
+target/debug/keel-keyboard     # in another terminal
+```
+
+```
+w/s ↑/↓ forward and back, a/d ←/→ turn, q/e step aside, space stop, Ctrl-C quit
+forward +0.10 m/s, left +0.00 m/s, turn +0.4 rad/s
+```
+
+Steps of 0.05 m/s and 0.2 rad/s, within the policy's training ranges. If
+the terminal goes, the node asks the duck to stop.
 
 ## Watching joints
 

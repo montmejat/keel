@@ -11,9 +11,9 @@
 //! ([`joints::JointLoop`]): [`damiao::DamiaoJoints`] on CAN,
 //! [`dynamixel::DynamixelJoints`] on a serial bus, [`plant::Pendulums`].
 //!
-//! keel's payloads are raw bytes; this crate gives three of them a layout:
-//! one [`State`] or [`Command`] per joint, back to back, little-endian, and
-//! an [`Imu`] reading. Their
+//! keel's payloads are raw bytes; this crate gives four of them a layout:
+//! one [`State`] or [`Command`] per joint, back to back, little-endian, an
+//! [`Imu`] reading, and a [`Walk`] command. Their
 //! time is in keel's header, not here: a state's stamp is when its joints
 //! were read (or the simulation's time), and a command inherits it.
 //!
@@ -148,6 +148,34 @@ impl Imu {
         let [w, x, y, z] = self.orientation;
         // The world's -z, turned into the body's frame (the orientation's inverse).
         [-2.0 * (x * z - w * y), -2.0 * (y * z + w * x), -(1.0 - 2.0 * (x * x + y * y))]
+    }
+}
+
+/// How a walking robot is asked to move, in its body's frame: forward
+/// (m/s), to its left (m/s), and turning left (rad/s). What a policy's
+/// walk command is (`keel-policy`'s `walk` input).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Walk {
+    pub forward: f64,
+    pub left: f64,
+    pub turn: f64,
+}
+
+impl Walk {
+    pub const LEN: usize = 24;
+
+    pub fn read(payload: &[u8]) -> Option<Walk> {
+        (payload.len() >= Self::LEN).then(|| Walk {
+            forward: f64_at(payload, 0),
+            left: f64_at(payload, 8),
+            turn: f64_at(payload, 16),
+        })
+    }
+
+    pub fn write(&self, payload: &mut [u8]) {
+        for (i, x) in [self.forward, self.left, self.turn].iter().enumerate() {
+            payload[8 * i..8 * i + 8].copy_from_slice(&x.to_le_bytes());
+        }
     }
 }
 
