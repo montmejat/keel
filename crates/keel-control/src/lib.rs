@@ -8,11 +8,12 @@
 //!
 //! Inside such a node, a driver is only what its joints need ([`joints::Joints`]:
 //! read, write, start, stop), and one loop runs any of them
-//! ([`joints::JointLoop`]): [`damiao::DamiaoJoints`],
-//! [`plant::Pendulums`].
+//! ([`joints::JointLoop`]): [`damiao::DamiaoJoints`] on CAN,
+//! [`dynamixel::DynamixelJoints`] on a serial bus, [`plant::Pendulums`].
 //!
-//! keel's payloads are raw bytes; this crate gives two of them a layout: one
-//! [`State`] or [`Command`] per joint, back to back, little-endian. Their
+//! keel's payloads are raw bytes; this crate gives three of them a layout:
+//! one [`State`] or [`Command`] per joint, back to back, little-endian, and
+//! an [`Imu`] reading. Their
 //! time is in keel's header, not here: a state's stamp is when its joints
 //! were read (or the simulation's time), and a command inherits it.
 //!
@@ -22,10 +23,12 @@
 pub mod can;
 pub mod cycle;
 pub mod damiao;
+pub mod dynamixel;
 pub mod health;
 pub mod joints;
 pub mod pid;
 pub mod plant;
+pub mod serial;
 
 use std::io;
 use std::str::FromStr;
@@ -103,6 +106,51 @@ impl Status {
     }
 }
 
+/// What an IMU says of the body it's on ([0035]): its orientation (a unit
+/// quaternion, w x y z, the body's frame in a world whose z is up), its
+/// angular velocity (rad/s) and its acceleration (m/s², gravity included:
+/// +9.81 up at rest), both in the body's frame. NaN for what the sensor
+/// doesn't measure.
+///
+/// [0035]: ../../../docs/decisions/0035-imu-messages.md
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Imu {
+    pub orientation: [f64; 4],
+    pub angular_velocity: [f64; 3],
+    pub linear_acceleration: [f64; 3],
+}
+
+impl Imu {
+    pub const LEN: usize = 80;
+
+    pub fn read(payload: &[u8]) -> Option<Imu> {
+        if payload.len() < Self::LEN {
+            return None;
+        }
+        let x = |i: usize| f64_at(payload, 8 * i);
+        Some(Imu {
+            orientation: [x(0), x(1), x(2), x(3)],
+            angular_velocity: [x(4), x(5), x(6)],
+            linear_acceleration: [x(7), x(8), x(9)],
+        })
+    }
+
+    pub fn write(&self, payload: &mut [u8]) {
+        let all = self.orientation.iter().chain(&self.angular_velocity).chain(&self.linear_acceleration);
+        for (i, x) in all.enumerate() {
+            payload[8 * i..8 * i + 8].copy_from_slice(&x.to_le_bytes());
+        }
+    }
+
+    /// Which way is down, in the body's frame: a unit vector, (0, 0, -1)
+    /// when level.
+    pub fn gravity(&self) -> [f64; 3] {
+        let [w, x, y, z] = self.orientation;
+        // The world's -z, turned into the body's frame (the orientation's inverse).
+        [-2.0 * (x * z - w * y), -2.0 * (y * z + w * x), -(1.0 - 2.0 * (x * x + y * y))]
+    }
+}
+
 /// What a joint is asked for, as the drives of quasi-direct-drive motors
 /// take it (their MIT mode): the torque
 /// `kp (position − θ) + kd (velocity − θ̇) + effort`, in newton metres, where
@@ -111,7 +159,9 @@ impl Status {
 /// Whoever drives the joint closes that loop: a drive, many times a cycle,
 /// or keel's side of the bus once a cycle for drives that only take a
 /// torque. A plain torque is `kp = kd = 0`, which is what [`Command::effort`]
-/// makes, and what a controller closing its own loop sends.
+/// makes, and what a controller closing its own loop sends. A position
+/// servo takes the position only, and closes its own loop with its own
+/// gain ([0034](../../../docs/decisions/0034-dynamixel-servos.md)).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Command {
     /// rad
@@ -181,6 +231,25 @@ pub fn arg<T: FromStr>(name: &str, default: T) -> io::Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_imu_reading_round_trips_and_says_which_way_is_down() {
+        // Pitched 0.3 rad nose down, about y.
+        let (c, s) = ((0.15f64).cos(), (0.15f64).sin());
+        let imu = Imu {
+            orientation: [c, 0.0, s, 0.0],
+            angular_velocity: [0.1, 0.2, 0.3],
+            linear_acceleration: [f64::NAN; 3],
+        };
+        let mut payload = vec![0; Imu::LEN];
+        imu.write(&mut payload);
+        let back = Imu::read(&payload).unwrap();
+        assert_eq!((back.orientation, back.angular_velocity), (imu.orientation, imu.angular_velocity));
+        let g = back.gravity();
+        for (got, want) in g.iter().zip([0.3f64.sin(), 0.0, -0.3f64.cos()]) {
+            assert!((got - want).abs() < 1e-9, "{g:?}");
+        }
+    }
     use crate::pid::Pid;
     use crate::plant::Pendulum;
 

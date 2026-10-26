@@ -61,6 +61,7 @@ stamp of the state it answers.
 |---|---|---|
 | `keel-sim` | pendulums, stepped each tick | `--joints 1 --hz 1000 --cycle same\|next\|lockstep --deadline-us 300 --spin-us 0` |
 | `keel-can` | Damiao's motors on a CAN bus: a cyclic bus master over SocketCAN | `--interface can0 --motors 0x01:0x11,… --fd false --hz 1000 --cycle same\|next --deadline-us 300 --spin-us 0 --names a,b` |
+| `keel-dynamixel` | Dynamixel servos (Protocol 2.0) on a serial bus, and an IMU on it: a cyclic bus master | `--port /dev/ttyS2 --baud 1000000 --motors 20,21,… --p-gain 400 --imu 200 --imu-mount w,x,y,z --hz 50 --cycle same\|next --names a,b` |
 | `keel-pid` | a PID per joint, a command for each state | `--target 1.0 --kp 40 --ki 40 --kd 4 --limit 10 --spin-us 0 --period-us 0` |
 
 ## Damiao's motors
@@ -112,6 +113,52 @@ keel trace
 ```
 
 On a real OpenArm, `--interface can0`; nothing else changes.
+
+## Dynamixel servos
+
+`keel-dynamixel --port /dev/ttyS2 --motors 20,21,22 --p-gain 200`: servos
+on a half-duplex serial bus, by id, in joint order
+([0034](decisions/0034-dynamixel-servos.md)).
+
+- **A command's position is its servo's goal.** The servo closes its own
+  loop, with the P gain set at start; a command's velocity, gains and
+  effort aren't used, and the node says so once if they're sent.
+- **At start**, every device is waited for, as on CAN, then each servo
+  holds where it is: its goal its position, its P gain set, torque on. **At
+  stop**, torque off. keel writes the servos' RAM only; how they're set up
+  (ids, baud rate, return delay, homing offsets) is the robot's.
+- **Each cycle, one Fast Sync Read** of every servo (PWM, current,
+  velocity, position), published as `state`, stamped with when it was
+  asked; then **one Sync Write** of the goals. A state's effort is the
+  current times the XL330's torque constant (BAM's 0.366 N m/A), an
+  estimate: the XL330 measures its supply's current.
+- **An IMU on the bus** (`--imu 200`, the Microduck's) is read in the same
+  Fast Sync Read, turned into the body's frame by `--imu-mount`, and
+  published as `imu` ([0035](decisions/0035-imu-messages.md)), just before
+  the state.
+
+### The Microduck, in simulation
+
+`examples/microduck.yml`: Pollen's Microduck, fifteen servos and its IMU,
+with `microduck-stand` holding the pose its policies start from. The duck is
+drydock, behind a pseudo-terminal; in drydock's repository, in lockstep, so
+it stands until keel drives it:
+
+```sh
+drydock examples/microduck/robot.yml --lockstep 50
+```
+
+then here:
+
+```sh
+keel run examples/microduck.yml
+keel logs controller      # "0.0s joints within 0.006 rad of standing; down [+0.00 -0.00 -1.00]"
+```
+
+A fixed pose doesn't balance it: servos that only hold positions sag under
+its weight, it leans forward, and the lean feeds itself. At Pollen's P gain
+(200) it tips over within two seconds; at the factory's (400) it leans
+0.16 rad in seven. Its policy balances it ([0036](decisions/0036-policies-as-onnx.md)).
 
 ## Watching joints
 
